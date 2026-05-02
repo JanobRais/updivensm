@@ -1,0 +1,43 @@
+services:
+  app:
+    build: .
+    container_name: updive-nsm-app
+    restart: always
+    ports:
+      - "8080:80"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - DB_HOST=db
+      - DB_DATABASE=updive_nsm
+      - DB_USERNAME=updive
+      - DB_PASSWORD=updive_pass
+      - MYSQL_ROOT_PASSWORD=root_pass
+      - REDIS_HOST=redis
+      - UpdiveNSM_USER=www-data
+      - UpdiveNSM_GROUP=www-data
+    volumes:
+      - .:/opt/updive-nsm
+    depends_on:
+      - db
+      - redis
+
+  db:
+    image: mariadb:10.11
+    container_name: updive-nsm-db
+    restart: always
+    environment:
+      - MYSQL_ROOT_PASSWORD=root_pass
+      - MYSQL_DATABASE=updive_nsm
+      - MYSQL_USER=updive
+      - MYSQL_PASSWORD=updive_pass
+    volumes:
+      - db_data:/var/lib/mysql
+
+  redis:
+    image: redis:alpine
+    container_name: updive-nsm-redis
+    restart: always
+
+volumes:
+  db_data:

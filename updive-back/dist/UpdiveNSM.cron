@@ -1,0 +1,15 @@
+33   */6  * * *   UpdiveNSM    /opt/UpdiveNSM/cronic /opt/UpdiveNSM/discovery-wrapper.py 1
+*/5  *    * * *   UpdiveNSM    /opt/UpdiveNSM/lnms device:discover new >> /dev/null 2>&1
+
+*/5  *    * * *   UpdiveNSM    /opt/UpdiveNSM/cronic /opt/UpdiveNSM/poller-wrapper.py 16
+*    *    * * *   UpdiveNSM    /opt/UpdiveNSM/alerts.php >> /dev/null 2>&1
+
+*/5  *    * * *   UpdiveNSM    /opt/UpdiveNSM/poll-billing.php >> /dev/null 2>&1
+01   *    * * *   UpdiveNSM    /opt/UpdiveNSM/billing-calculate.php >> /dev/null 2>&1
+*/5  *    * * *   UpdiveNSM    /opt/UpdiveNSM/check-services.php >> /dev/null 2>&1
+
+# Daily maintenance script. DO NOT DISABLE!
+# If you want to modify updates:
+#  Switch to monthly stable release: https://docs.UpdiveNSM.org/General/Releases/
+#  Disable updates: https://docs.UpdiveNSM.org/General/Updating/
+19   0    * * *   UpdiveNSM    /opt/UpdiveNSM/daily.sh >> /dev/null 2>&1

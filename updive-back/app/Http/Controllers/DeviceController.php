@@ -1,0 +1,108 @@
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Facades\DeviceCache;
+use App\Facades\UpdiveNSMConfig;
+use App\Models\Device;
+use App\View\Components\Device\PageTabs;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Gate;
+use UpdiveNSM\Util\Debug;
+use UpdiveNSM\Util\Url;
+
+class DeviceController
+{
+    public function index(Request $request, $device, $current_tab = 'overview', $vars = '')
+    {
+        $device = str_replace('device=', '', $device);
+        $device = DeviceCache::get($device);
+        $device_id = $device->device_id;
+
+        if (! $device->exists) {
+            abort(404);
+        }
+
+        DeviceCache::setPrimary($device_id);
+
+        $current_tab = str_replace('tab=', '', $current_tab) ?: 'overview';
+
+        if ($current_tab == 'port') {
+            $vars = Url::parseLegacyPath($request->path());
+            $port = $device->ports()->findOrFail($vars->get('port'));
+            Gate::authorize('view', $port);
+        } else {
+            Gate::authorize('view', $device);
+        }
+
+        // Filter array params before passing request to tab controllers
+        $request->query->replace(array_filter($request->query->all(), 'is_string'));
+        $request->request->replace(array_filter($request->request->all(), 'is_string'));
+
+        $tab_controller = PageTabs::getTab($current_tab);
+        $title = $tab_controller->name();
+        $data = $tab_controller->data($device, $request);
+
+        $vars_array = [
+            'page'   => 'device',
+            'device' => $device_id,
+            'tab'    => $current_tab,
+        ];
+        foreach ($request->all() as $key => $value) {
+            $vars_array[$key] = $value;
+        }
+
+        $data_array = [
+            'title' => $title,
+            'device' => $device,
+            'device_id' => $device_id,
+            'data' => $data,
+            'vars' => $vars_array,
+            'current_tab' => $current_tab,
+            'request' => $request,
+        ];
+
+        if (view()->exists('device.tabs.' . $current_tab)) {
+            return view('device.tabs.' . $current_tab, $data_array);
+        }
+
+        $data_array['tab_content'] = $this->renderLegacyTab($current_tab, $device, $data);
+
+        return view('device.tabs.legacy', $data_array);
+    }
+
+    private function renderLegacyTab($tab, Device $device, $data)
+    {
+        ob_start();
+        $device = $device->toArray();
+        $device['os_group'] = UpdiveNSMConfig::get("os.{$device['os']}.group");
+        Debug::set(false);
+        chdir(base_path());
+        $init_modules = ['web', 'auth'];
+        require base_path('/includes/init.php');
+
+        $vars = $data['vars'] ?? [];
+        if (!is_array($vars)) { $vars = []; }
+        $vars['page'] = 'device';
+        $vars['device'] = $device['device_id'];
+        $vars['tab'] = $tab;
+
+        extract($data); // set preloaded data into variables
+        include "includes/html/pages/device/$tab.inc.php";
+        $output = ob_get_clean();
+
+        return $output;
+    }
+
+    public function rediscover(Device $device): JsonResponse
+    {
+        $device->last_discovered = null;
+        $saved = $device->save();
+
+        return response()->json([
+            'message' => $saved ? 'Device scheduled for discovery' : 'Failed to schedule device for discovery',
+            'status' => $saved ? 'ok' : 'error',
+        ]);
+    }
+}

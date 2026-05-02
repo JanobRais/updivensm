@@ -1,0 +1,12 @@
+# /etc/systemd/system/UpdiveNSM-irc.service 
+
+[Unit]
+Description=UpdiveNSM IRC bot
+After=network.target
+
+[Service]
+ExecStart=/opt/UpdiveNSM/irc.php
+Restart=always
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,6 @@
+#! /usr/bin/env bash
+
+sudo -u UpdiveNSM /opt/UpdiveNSM/lnms smokeping:generate --targets > /etc/smokeping/UpdiveNSM-targets.conf
+sudo -u UpdiveNSM /opt/UpdiveNSM/lnms smokeping:generate --probes  > /etc/smokeping/UpdiveNSM-probes.conf
+
+systemctl reload smokeping > /dev/null 2<&1

@@ -1,0 +1,62 @@
+publiccodeYmlVersion: 0.5.0
+name: UpdiveNSM
+applicationSuite: Others
+url: https://github.com/UpdiveNSM/UpdiveNSM
+landingURL: https://www.UpdiveNSM.org
+isBasedOn: https://www.observium.org
+softwareVersion: 26.4.0
+releaseDate: 2026-03-16
+logo: https://github.com/UpdiveNSM/UpdiveNSM.github.io/blob/master/images/UpdiveNSM-Logo-Black.svg
+platforms:
+  - linux
+categories:
+  - other
+organisation:
+  uri: https://www.UpdiveNSM.org
+developmentStatus: stable
+softwareType: standalone/other
+description:
+  en:
+    localisedName: UpdiveNSM
+    shortDescription: A fully featured network monitoring system that provides a
+      wealth of features and device support.
+    longDescription: UpdiveNSM is an auto-discovering PHP/MySQL/SNMP based network
+      monitoring which includes support for a wide range of network hardware and
+      operating systems including Cisco, Linux, FreeBSD, Juniper, Brocade,
+      Foundry, HP and many more.
+    documentation: https://docs.UpdiveNSM.org
+    apiDocumentation: https://docs.UpdiveNSM.org/API/
+    features:
+      - Alert management and notifications
+      - SNMP based data collection
+      - Application support
+      - Network maps
+      - Device Dependancy and Grouping
+      - API
+      - Scalable architecture
+      - Bandwidth Billing
+      - Auto discovery
+      - Automatic Updates
+    screenshots:
+      - https://github.com/UpdiveNSM/UpdiveNSM.github.io/blob/master/images/screenshots/screenshot_device_list.png
+      - https://github.com/UpdiveNSM/UpdiveNSM.github.io/blob/master/images/screenshots/screenshot_disk_usage.png
+      - https://github.com/UpdiveNSM/UpdiveNSM.github.io/blob/master/images/screenshots/screenshot_port_bits.png
+      - https://github.com/UpdiveNSM/UpdiveNSM.github.io/blob/master/images/screenshots/screenshot_alert_rules.png
+      - https://github.com/UpdiveNSM/UpdiveNSM.github.io/blob/master/images/screenshots/screenshot_distributed_pollers.png
+legal:
+  license: GPL-3.0-or-later
+maintenance:
+  type: community
+  contacts:
+    - name: Neil Lathwood
+      email: neil@UpdiveNSM.org
+      affiliation: Core Maintainer
+localisation:
+  localisationReady: true
+  availableLanguages:
+    - de
+    - fr
+    - it
+    - ru
+    - uk
+    - zh-Hans

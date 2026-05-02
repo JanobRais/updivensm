@@ -1,0 +1,15 @@
+[Unit]
+Description=UpdiveNSM SNMP Poller Service
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/scl enable rh-python36 -- /opt/UpdiveNSM/UpdiveNSM-service.py -v
+ExecReload=/bin/kill -HUP $MAINPID
+WorkingDirectory=/opt/UpdiveNSM
+User=UpdiveNSM
+Group=UpdiveNSM
+RestartSec=10
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

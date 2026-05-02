@@ -1,0 +1,11 @@
+[Unit]
+Description=UpdiveNSM Scheduler
+
+[Service]
+Type=oneshot
+StandardOutput=null
+StandardError=null
+WorkingDirectory=/opt/UpdiveNSM/
+ExecStart=/usr/bin/env php artisan schedule:run --no-ansi --no-interaction
+User=UpdiveNSM
+Group=UpdiveNSM

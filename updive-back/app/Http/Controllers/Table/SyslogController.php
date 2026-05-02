@@ -1,0 +1,142 @@
+<?php
+
+/**
+ * SyslogController.php
+ *
+ * -Description-
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ *
+ * @link       https://www.UpdiveNSM.org
+ *
+ * @copyright  2018 Tony Murray
+ * @author     Tony Murray <murraytony@gmail.com>
+ */
+
+namespace App\Http\Controllers\Table;
+
+use App\Models\Syslog;
+use Illuminate\Support\Facades\Blade;
+use UpdiveNSM\Enum\SyslogSeverity;
+
+class SyslogController extends TableController
+{
+    public function rules()
+    {
+        return [
+            'device' => 'nullable|int',
+            'device_group' => 'nullable|int',
+            'program' => 'nullable|string',
+            'priority' => 'nullable|string',
+            'to' => 'nullable|date',
+            'from' => 'nullable|date',
+            'level' => 'nullable|string',
+        ];
+    }
+
+    public function searchFields($request)
+    {
+        return ['msg'];
+    }
+
+    public function filterFields($request)
+    {
+        return [
+            'device_id' => 'device',
+            'program' => 'program',
+            'priority' => 'priority',
+        ];
+    }
+
+    public function sortFields($request)
+    {
+        return ['label', 'timestamp', 'level', 'device_id', 'program', 'msg', 'priority'];
+    }
+
+    /**
+     * Defines the base query for this resource
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return \Illuminate\Database\Eloquent\Builder|\Illuminate\Database\Query\Builder
+     */
+    public function baseQuery($request)
+    {
+        return Syslog::hasAccess($request->user())
+            ->with('device')
+            ->when($request->device_group, function ($query, $group): void {
+                $query->inDeviceGroup($group);
+            })
+            ->when($request->from, function ($query, $from): void {
+                $query->where('timestamp', '>=', $from);
+            })
+            ->when($request->to, function ($query, $to): void {
+                $query->where('timestamp', '<=', $to);
+            })
+            ->when($request->level, function ($query, $level): void {
+                if ($level >= 7) {
+                    return;  // include everything
+                }
+
+                $levels = array_slice(SyslogSeverity::LEVELS, 0, $level + 1);
+                $query->whereIn('level', $levels);
+            });
+    }
+
+    /**
+     * @param  Syslog  $syslog
+     */
+    public function formatItem($syslog)
+    {
+        return [
+            'label' => $this->setLabel($syslog),
+            'timestamp' => $syslog->timestamp,
+            'level' => htmlentities((string) $syslog->level),
+            'device_id' => Blade::render('<x-device-link :device="$device"/>', ['device' => $syslog->device]),
+            'program' => htmlentities((string) $syslog->program),
+            'msg' => htmlentities((string) $syslog->msg),
+            'priority' => htmlentities((string) $syslog->priority),
+        ];
+    }
+
+    private function setLabel($syslog)
+    {
+        $output = "<span class='alert-status ";
+        $output .= $this->priorityLabel($syslog->priority);
+        $output .= "'>";
+        $output .= '</span>';
+
+        return $output;
+    }
+
+    /**
+     * @param  int  $syslog_priority
+     * @return string
+     */
+    private function priorityLabel($syslog_priority)
+    {
+        return match ($syslog_priority) {
+            'debug' => 'label-default',
+            'info' => 'label-info',
+            'notice' => 'label-primary',
+            'warning' => 'label-warning',
+            'err' => 'label-danger',
+            'crit' => 'label-danger',
+            'alert' => 'label-danger',
+            'emerg' => 'label-danger',
+            default => '',
+        };
+    }
+
+    // end syslog_priority
+}

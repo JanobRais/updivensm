@@ -1,0 +1,14 @@
+support-request:
+  comment: >
+    :wave: @{issue-author} sorry but this is not the place to ask for help.
+
+    For help please use our [Discord server](https://discord.gg/UpdiveNSM) or the [community site](https://community.UpdiveNSM.org/c/help): https://docs.UpdiveNSM.org/Support
+    
+  close: true
+
+'Needs Tests :unicorn:':
+  prs:
+    comment: >
+      Please add test data so we can ensure your change is not broken in the future.
+
+      Read the docs to find out how: https://docs.UpdiveNSM.org/Developing/os/Test-Units
