@@ -340,14 +340,15 @@ const DeviceDetailsPage = ({ hostname, onBack, accent }) => {
   useEffect(() => {
     setLoading(true);
     setSelPort(null);
+    const safe = (promise, fallback) => promise.catch(() => fallback);
     Promise.all([
       getDeviceDetails(hostname),
-      getDevicePorts(hostname),
-      getDeviceProcessors(hostname),
-      getDeviceMempools(hostname),
-      getDeviceAlerts(hostname),
-      getDeviceEventlog(hostname),
-      getDeviceLinks(hostname),
+      safe(getDevicePorts(hostname),      []),
+      safe(getDeviceProcessors(hostname), []),
+      safe(getDeviceMempools(hostname),   []),
+      safe(getDeviceAlerts(hostname),     []),
+      safe(getDeviceEventlog(hostname),   []),
+      safe(getDeviceLinks(hostname),      []),
     ]).then(([dev, p, procs, mems, alts, logs, lks]) => {
       setDevice(dev);
       setPorts(p);
@@ -373,8 +374,10 @@ const DeviceDetailsPage = ({ hostname, onBack, accent }) => {
   const activeAlerts = alerts.filter(a => a.state === 1);
   const devId       = device.device_id;
 
-  const gUrl = (type, id, extra = '') =>
-    `/graph?type=${type}&id=${id}&from=${timeRange}&to=now&width=600&height=200&legend=yes${extra}`;
+  const gUrl = (type, id, extra = '') => {
+    const param = type.startsWith('device_') ? `device=${id}` : `id=${id}`;
+    return `/graph.php?type=${type}&${param}&from=${timeRange}&to=now&width=600&height=200&legend=yes${extra}`;
+  };
 
   const DEVICE_GRAPHS = [
     { type: 'device_processor', label: 'CPU Usage' },

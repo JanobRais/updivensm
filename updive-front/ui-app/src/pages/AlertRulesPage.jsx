@@ -297,83 +297,124 @@ const DeleteConfirm = ({ rule, onConfirm, onClose }) => (
   </div>
 );
 
+const PAGE_SIZE = 25;
+
+// ─── Pagination Bar ────────────────────────────────────────────────
+const Pagination = ({ page, totalPages, onChange, accent }) => {
+  if (totalPages <= 1) return null;
+
+  const pages = [];
+  const delta = 2;
+  const left  = Math.max(1, page - delta);
+  const right = Math.min(totalPages, page + delta);
+
+  if (left > 1) { pages.push(1); if (left > 2) pages.push('…'); }
+  for (let i = left; i <= right; i++) pages.push(i);
+  if (right < totalPages) { if (right < totalPages - 1) pages.push('…'); pages.push(totalPages); }
+
+  const btn = (label, target, active = false, disabled = false) => (
+    <button key={label} onClick={() => !disabled && target && onChange(target)}
+      disabled={disabled}
+      style={{
+        minWidth: 32, height: 32, padding: '0 8px', borderRadius: 7,
+        border: `1px solid ${active ? accent : '#e5e7eb'}`,
+        background: active ? accent : disabled ? '#f9fafb' : '#fff',
+        color: active ? '#fff' : disabled ? '#d1d5db' : '#374151',
+        fontSize: 12, fontWeight: active ? 700 : 500,
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        fontFamily: 'inherit',
+      }}>{label}</button>
+  );
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+      {btn('←', page - 1, false, page === 1)}
+      {pages.map((p, i) =>
+        p === '…'
+          ? <span key={`e${i}`} style={{ padding: '0 4px', color: '#9ca3af', fontSize: 12 }}>…</span>
+          : btn(p, p, p === page)
+      )}
+      {btn('→', page + 1, false, page === totalPages)}
+    </div>
+  );
+};
+
 // ─── Main Page ─────────────────────────────────────────────────────
 const AlertRulesPage = ({ accent = '#22c55e' }) => {
-  const [rules, setRules]       = useState([]);
-  const [cursor, setCursor]     = useState(null);
-  const [hasMore, setHasMore]   = useState(false);
-  const [loading, setLoading]   = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
+  const [allRules, setAllRules] = useState([]);
+  const [loading,  setLoading]  = useState(true);
+  const [page,     setPage]     = useState(1);
 
-  const [search, setSearch]     = useState('');
-  const [sevFilter, setSevFilter] = useState('');
-  const [showFilter, setShowFilter] = useState('all'); // all | enabled | disabled
+  const [search,     setSearch]     = useState('');
+  const [sevFilter,  setSevFilter]  = useState('');
+  const [showFilter, setShowFilter] = useState('all');
 
-  const [detailId, setDetailId] = useState(null);
-  const [editRule, setEditRule] = useState(null);   // null | false | rule object
-  const [deleteTarget, setDeleteTarget] = useState(null);
-
-  const buildParams = useCallback((cur = null) => {
-    const p = { limit: 25 };
-    if (search)  p.search   = search;
-    if (sevFilter) p.severity = sevFilter;
-    if (showFilter === 'enabled')  p.disabled = 0;
-    if (showFilter === 'disabled') p.disabled = 1;
-    if (cur) p.cursor = cur;
-    return p;
-  }, [search, sevFilter, showFilter]);
+  const [detailId,      setDetailId]      = useState(null);
+  const [editRule,      setEditRule]      = useState(null);
+  const [deleteTarget,  setDeleteTarget]  = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const d = await getAlertRulesV2(buildParams());
-      setRules(d.data ?? []);
-      setCursor(d.meta?.next_cursor ?? null);
-      setHasMore(!!(d.meta?.next_cursor));
-    } catch { setRules([]); }
-    finally  { setLoading(false); }
-  }, [buildParams]);
-
-  const loadMore = async () => {
-    if (!cursor || loadingMore) return;
-    setLoadingMore(true);
-    try {
-      const d = await getAlertRulesV2(buildParams(cursor));
-      setRules(r => [...r, ...(d.data ?? [])]);
-      setCursor(d.meta?.next_cursor ?? null);
-      setHasMore(!!(d.meta?.next_cursor));
-    } finally { setLoadingMore(false); }
-  };
+      const d = await getAlertRulesV2({ limit: 500 });
+      setAllRules(d.data ?? []);
+    } catch { setAllRules([]); }
+    finally { setLoading(false); }
+  }, []);
 
   useEffect(() => { load(); }, [load]);
 
+  // Reset to page 1 whenever filters change
+  useEffect(() => { setPage(1); }, [search, sevFilter, showFilter]);
+
+  // ── Filter ──────────────────────────────────────────────────────
+  const filtered = allRules.filter(r => {
+    if (sevFilter && r.severity !== sevFilter) return false;
+    if (showFilter === 'enabled'  &&  r.disabled) return false;
+    if (showFilter === 'disabled' && !r.disabled) return false;
+    if (search) {
+      const q = search.toLowerCase();
+      if (!r.name?.toLowerCase().includes(q) && !r.notes?.toLowerCase().includes(q)) return false;
+    }
+    return true;
+  });
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const paginated  = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+  // ── Handlers ────────────────────────────────────────────────────
   const handleToggle = async (rule) => {
     try {
       const res = await toggleAlertRuleV2(rule.id);
-      setRules(rs => rs.map(r => r.id === rule.id ? { ...r, disabled: res.disabled } : r));
+      setAllRules(rs => rs.map(r => r.id === rule.id ? { ...r, disabled: res.disabled } : r));
     } catch {}
   };
 
   const handleCreate = async (form) => {
     const res = await createAlertRuleV1(form);
-    setRules(rs => [res.rule, ...rs]);
+    setAllRules(rs => [res.rule, ...rs]);
+    setPage(1);
   };
 
   const handleUpdate = async (form) => {
     const res = await updateAlertRuleV2(editRule.id, form);
-    setRules(rs => rs.map(r => r.id === editRule.id ? res.rule : r));
+    setAllRules(rs => rs.map(r => r.id === editRule.id ? res.rule : r));
   };
 
   const handleDelete = async () => {
     await deleteAlertRuleV2(deleteTarget.id);
-    setRules(rs => rs.filter(r => r.id !== deleteTarget.id));
+    setAllRules(rs => rs.filter(r => r.id !== deleteTarget.id));
     setDeleteTarget(null);
+    if (paginated.length === 1 && page > 1) setPage(p => p - 1);
   };
 
-  const total    = rules.length;
-  const enabled  = rules.filter(r => !r.disabled).length;
-  const disabled = rules.filter(r =>  r.disabled).length;
-  const critical = rules.filter(r => r.severity === 'critical').length;
+  const total    = allRules.length;
+  const enabled  = allRules.filter(r => !r.disabled).length;
+  const disabled = allRules.filter(r =>  r.disabled).length;
+  const critical = allRules.filter(r => r.severity === 'critical').length;
+
+  const from = filtered.length === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
+  const to   = Math.min(page * PAGE_SIZE, filtered.length);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
@@ -382,10 +423,10 @@ const AlertRulesPage = ({ accent = '#22c55e' }) => {
       {/* Stat cards */}
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
         {[
-          { label: 'Total Rules',  value: total,    color: '#6366f1' },
-          { label: 'Enabled',      value: enabled,  color: '#22c55e' },
-          { label: 'Disabled',     value: disabled, color: '#9ca3af' },
-          { label: 'Critical',     value: critical, color: '#ef4444' },
+          { label: 'Total Rules', value: total,    color: '#6366f1' },
+          { label: 'Enabled',     value: enabled,  color: '#22c55e' },
+          { label: 'Disabled',    value: disabled, color: '#9ca3af' },
+          { label: 'Critical',    value: critical, color: '#ef4444' },
         ].map(c => (
           <div key={c.label} style={{ ...S.card, padding: '14px 20px', minWidth: 120, flex: 1 }}>
             <div style={{ fontSize: 11, color: '#9ca3af', fontWeight: 600, marginBottom: 4 }}>{c.label}</div>
@@ -396,7 +437,6 @@ const AlertRulesPage = ({ accent = '#22c55e' }) => {
 
       {/* Toolbar */}
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-        {/* Search */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#fff',
           border: '1px solid #e5e7eb', borderRadius: 8, padding: '5px 10px', flex: 1, minWidth: 200, maxWidth: 320 }}>
           <Icon name="search" size={13} color="#9ca3af" />
@@ -406,7 +446,6 @@ const AlertRulesPage = ({ accent = '#22c55e' }) => {
               fontFamily: 'inherit', background: 'transparent', width: '100%' }} />
         </div>
 
-        {/* Severity filter */}
         <select value={sevFilter} onChange={e => setSevFilter(e.target.value)}
           style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #e5e7eb',
             fontSize: 12, color: '#374151', background: '#fff', fontFamily: 'inherit', cursor: 'pointer' }}>
@@ -416,7 +455,6 @@ const AlertRulesPage = ({ accent = '#22c55e' }) => {
           <option value="ok">OK</option>
         </select>
 
-        {/* Enabled/disabled tabs */}
         {['all', 'enabled', 'disabled'].map(v => (
           <button key={v} onClick={() => setShowFilter(v)} style={{
             padding: '5px 13px', borderRadius: 7,
@@ -451,16 +489,15 @@ const AlertRulesPage = ({ accent = '#22c55e' }) => {
                 Loading…
               </td></tr>
             )}
-            {!loading && rules.length === 0 && (
+            {!loading && paginated.length === 0 && (
               <tr><td colSpan={6} style={{ ...S.td, textAlign: 'center', color: '#9ca3af', padding: 40 }}>
                 No rules found.
               </td></tr>
             )}
-            {!loading && rules.map((rule, i) => (
+            {!loading && paginated.map((rule, i) => (
               <tr key={rule.id} style={{ borderTop: '1px solid #f0f2f5',
                 background: i % 2 === 0 ? '#fff' : '#fafafa',
                 opacity: rule.disabled ? 0.6 : 1 }}>
-                {/* Name */}
                 <td style={S.td}>
                   <button onClick={() => setDetailId(rule.id)}
                     style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0,
@@ -470,9 +507,7 @@ const AlertRulesPage = ({ accent = '#22c55e' }) => {
                   </button>
                   <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 2 }}>#{rule.id}</div>
                 </td>
-                {/* Severity */}
                 <td style={S.td}><SevBadge sev={rule.severity} /></td>
-                {/* Query preview */}
                 <td style={{ ...S.td, maxWidth: 240 }}>
                   <code style={{ fontSize: 11, color: '#374151', background: '#f9fafb',
                     padding: '2px 6px', borderRadius: 4, display: 'block',
@@ -480,16 +515,13 @@ const AlertRulesPage = ({ accent = '#22c55e' }) => {
                     {rule.query}
                   </code>
                 </td>
-                {/* Notes */}
                 <td style={{ ...S.td, maxWidth: 200, color: '#6b7280', fontSize: 12,
                   overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {rule.notes || '—'}
                 </td>
-                {/* Toggle */}
                 <td style={S.td}>
                   <Toggle checked={!rule.disabled} onChange={() => handleToggle(rule)} />
                 </td>
-                {/* Actions */}
                 <td style={{ ...S.td, whiteSpace: 'nowrap' }}>
                   <div style={{ display: 'flex', gap: 6 }}>
                     <button onClick={() => setEditRule(rule)} style={S.ghost} title="Edit">
@@ -506,11 +538,15 @@ const AlertRulesPage = ({ accent = '#22c55e' }) => {
           </tbody>
         </table>
 
-        {hasMore && (
-          <div style={{ padding: '12px 16px', borderTop: '1px solid #f0f2f5', textAlign: 'center' }}>
-            <button onClick={loadMore} disabled={loadingMore} style={S.ghost}>
-              {loadingMore ? 'Loading…' : 'Load More'}
-            </button>
+        {/* Pagination footer */}
+        {!loading && filtered.length > 0 && (
+          <div style={{ padding: '12px 16px', borderTop: '1px solid #f0f2f5',
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+            <span style={{ fontSize: 12, color: '#9ca3af' }}>
+              {from}–{to} / {filtered.length} rule{filtered.length !== 1 ? 's' : ''}
+              {filtered.length !== total && <span style={{ color: '#6366f1', marginLeft: 6 }}>(filtered from {total})</span>}
+            </span>
+            <Pagination page={page} totalPages={totalPages} onChange={setPage} accent={accent} />
           </div>
         )}
       </div>

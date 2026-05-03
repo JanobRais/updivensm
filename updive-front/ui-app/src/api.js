@@ -58,7 +58,7 @@ export const getDeviceEventlog   = (hostname) => cached(`evlog:${hostname}`,    
 export const getDeviceHealth     = (hostname) =>                                        api.get(`/devices/${hostname}/health`).then(r => r.data || {});
 export const getDeviceAlerts     = (hostname) => cached(`alts:${hostname}`,      () => api.get('/alerts').then(r => (r.data?.alerts ?? []).filter(a => a.hostname === hostname)));
 export const getInventory        = (hostname) =>                                        api.get(`/inventory/${hostname}/all`).then(r => r.data?.inventory ?? []);
-export const getDeviceLinks      = (hostname) => cached(`links:${hostname}`,       () => api.get(`/devices/${hostname}/links`).then(r => r.data?.links ?? []));
+export const getDeviceLinks      = (hostname) => cached(`links:${hostname}`,       () => api.get(`/devices/${hostname}/links`).then(r => r.data?.links ?? []).catch(() => []));
 
 export default api;
 

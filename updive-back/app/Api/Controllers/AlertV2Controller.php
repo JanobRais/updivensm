@@ -106,7 +106,8 @@ class AlertV2Controller extends Controller
         $q = Alert::with([
             'device:device_id,hostname,sysName,status,uptime,type',
             'rule:id,name,severity,disabled,notes,proc',
-        ])->orderByDesc('alerts.id');
+        ])->whereHas('rule', fn ($r) => $r->where('disabled', 0))
+          ->orderByDesc('alerts.id');
 
         $this->applyAlertFilters($q, $request);
 

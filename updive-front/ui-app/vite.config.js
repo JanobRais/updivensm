@@ -15,6 +15,10 @@ export default defineConfig({
         target: 'http://localhost:8080',
         changeOrigin: true,
         headers: { 'X-Auth-Token': 'd4014ad7774807ecf049f3d4943c410afeb42186ef555af08a4f4b0d5518957b' },
+      },
+      '/graph.php': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
       }
     }
   }

@@ -123,6 +123,11 @@ Fayl joylari: `updive-front/ui-app/src/pages/`
   - Traffic: In/Out rate, Utilization %
   - Barcha maydonlar: ifIndex, Speed, MTU, MAC, errors, discards...
   - Agar LLDP link bo'lsa: `⬡ SW-SAM-FL1-01 — Gi0/24` badge
+- **Graphs tab**: Barcha qurilma grafiklari (CPU, Memory, Uptime, Bits, Ping, Availability)
+  - Port tanlanganda interfeys grafigi ham ko'rsatiladi
+  - **Graf URL formati**: `/graph.php?type=device_*&device={device_id}` (device grafiklari)
+  - Port grafiklari: `/graph.php?type=port_*&id={port_id}`
+  - `GraphImg` komponenti: loading/error/ok holatlari bilan
 - Tablar: Overview, Interfaces, CPU, Memory, Alerts, Eventlog, Graphs
 
 ### AllPages.jsx → DevicesPage
@@ -139,11 +144,13 @@ Fayl joylari: `updive-front/ui-app/src/pages/`
 - Active/acknowledged/muted alertlarni ko'rsatish
 - Ack, Unack, Mute amallar (v2 API)
 - Bulk select + bulk actions
+- **Faqat enabled qoidalar alertlari ko'rsatiladi** (disabled=1 qoidalar filtrlanadi)
 
 ### AlertRulesPage.jsx
 - Alert qoidalari ro'yxati (v2 API)
 - Yangi qoida yaratish (v1 API — Form Request validatsiya)
 - Toggle enable/disable, delete
+- **Numbered pagination**: 25 ta/sahifa, ellipsis bilan, filter-da sahifa 1 ga qaytadi
 
 ---
 
@@ -156,6 +163,97 @@ Fayl: `updive-front/ui-app/src/api.js`
 - `apiV2` (axios) → `/api/v2` — kengaytirilgan alertlar
 - **30 soniyalik in-memory cache** (`CACHE` Map, TTL=30000ms)
 - `invalidateCache(prefix)` — prefiks bo'yicha cache tozalash
+
+---
+
+## Alert Tizimi — Muhim Ma'lumotlar
+
+### Alert Qoidalari (alert_rules jadvali)
+- Jami: **237 qoida** (238 import qilindi, 1 ta dublikat)
+- **Faol**: 21 ta qoida (Cisco switchlarga tegishli)
+- **O'chirilgan**: 216 ta (Windows, Linux, I2PD, BGP, ISIS, IPSec, SSL, CustomOID va h.k.)
+
+### Import qilingan qoidalarning muammolari va yechimlari
+
+**1-muammo: `extra` maydonida `"invert":"false"` (string)**
+- PHP da `(bool) "false"` = `true` (bo'sh bo'lmagan string)
+- Natija: query 0 qator qaytarsa ham alert yonadi (`invert=true` rejimi)
+- **Yechim**: Barcha 237 qoidada `"false"` string → `false` boolean ga o'zgartirildi
+```php
+// updive-back script orqali bajarildi:
+foreach ($rules as $rule) {
+    foreach (['invert','mute','quiet'] as $key) {
+        if (isset($extra[$key]) && is_string($extra[$key])) {
+            $extra[$key] = ($extra[$key] === 'true'); // proper boolean
+        }
+    }
+}
+```
+
+**2-muammo: V2 API o'chirilgan qoidalar alertlarini ham qaytarardi**
+- `alerts` jadvalida barcha qoidalar uchun yozuvlar mavjud (state=1 yoki 0)
+- **Yechim**: `AlertV2Controller::index()` ga filter qo'shildi:
+```php
+->whereHas('rule', fn ($r) => $r->where('disabled', 0))
+```
+
+**3-muammo: Import vaqtida barcha alertlar state=1 bo'lib qolgan**
+- Yechim: `UPDATE alerts SET state=0 WHERE ...` orqali tozalash va qayta poll
+
+### Faol Alert Qoidalari (21 ta)
+Cisco access switch uchun relevant:
+- Port status change from up to down (critical)
+- Device Down (SNMP unreachable / ICMP) (critical)
+- Cisco Fan/PSU Status failed (critical)
+- State Sensor Critical/Warning
+- Syslog alerts (Alert/Emergency Priority, ARP full, Auth failure)
+- Port utilisation over threshold (warning)
+- Interface Errors Rate > 100 (warning)
+- Processor usage > 85% (warning)
+- Sensor over/under limit (warning)
+- Device rebooted / took too long to poll (warning)
+- Ping Latency, Port Speed Degraded (warning)
+
+### `extra` JSON formati (alert_rules)
+```json
+{"count":"0","delay":300,"mute":false,"invert":false,"interval":300,"quiet":false}
+```
+> **Muhim**: `invert`, `mute`, `quiet` maydonlari **boolean** bo'lishi shart, string emas!
+
+---
+
+## Graf Tizimi — Muhim Ma'lumotlar
+
+### Graf URL formati
+
+```
+/graph.php?type=device_uptime&device={device_id}&from=-6h&to=now&width=600&height=200
+/graph.php?type=port_bits&id={port_id}&from=-6h&to=now&width=600&height=200
+```
+
+> **Muhim**: `/graph` (Laravel route) EMAS, `/graph.php` (legacy script) ishlatiladi!
+> Laravel route `/graph` → session/middleware muammo → HTTP 500 HTML qaytaradi.
+> `/graph.php` → to'g'ridan-to'g'ri LibreNMS legacy PHP → image/svg+xml qaytaradi.
+
+### Device va Port parametrlari
+- **Device grafiklari** (`type=device_*`): `device={device_id}` parametri ishlatiladi
+- **Port grafiklari** (`type=port_*`): `id={port_id}` parametri ishlatiladi
+
+### Vite proxy konfiguratsiyasi
+```js
+'/graph.php': { target: 'http://localhost:8080', changeOrigin: true }
+```
+
+### Mavjud graf turlari (device)
+`device_processor`, `device_mempool`, `device_uptime`, `device_bits`,
+`device_availability`, `device_ping_perf`
+
+### RRD fayllar joyi
+```
+/opt/updive-nsm/rrd/{hostname}/uptime.rrd
+/opt/updive-nsm/rrd/{hostname}/port-id{N}.rrd
+/opt/updive-nsm/rrd/{hostname}/availability-86400.rrd
+```
 
 ---
 
@@ -198,6 +296,18 @@ docker exec -u www-data updive-nsm-app php artisan device:poll snmp-switch-03
 
 ---
 
+## Ma'lumotlar Bazasi
+
+- **Host**: `updive-nsm-db` container
+- **DB name**: `updive_nsm`
+- **User/Pass**: `updive` / `updive_pass`
+
+```bash
+docker exec updive-nsm-db mariadb --user=updive --password=updive_pass updive_nsm -e "SQL..."
+```
+
+---
+
 ## Muhim Fayllar
 
 | Fayl | Vazifa |
@@ -205,9 +315,12 @@ docker exec -u www-data updive-nsm-app php artisan device:poll snmp-switch-03
 | `updive-back/docker-compose.yml` | Barcha containerlar konfiguratsiyasi |
 | `updive-back/routes/api.php` | API routelar (v0/v1/v2) |
 | `updive-back/routes/console.php` | Cron scheduler |
+| `updive-back/app/Api/Controllers/AlertV2Controller.php` | V2 alert API (disabled filter qo'shilgan) |
 | `updive-back/snmpsim/data/switch-XX/public.snmprec` | Virtual switch SNMP ma'lumotlari |
 | `updive-front/ui-app/src/api.js` | Frontend API client + cache |
-| `updive-front/ui-app/src/pages/DeviceDetails.jsx` | Switch panel + port detail |
+| `updive-front/ui-app/src/pages/DeviceDetails.jsx` | Switch panel + port detail + graphs |
 | `updive-front/ui-app/src/pages/Dashboard.jsx` | Topologiya + dashboard |
 | `updive-front/ui-app/src/pages/AllPages.jsx` | Devices/Ports/Alerts ro'yxatlari |
+| `updive-front/ui-app/src/pages/AlertsPage.jsx` | Alerts boshqaruvi (v2 API) |
+| `updive-front/ui-app/src/pages/AlertRulesPage.jsx` | Alert qoidalari + pagination |
 | `updive-front/ui-app/vite.config.js` | Vite proxy konfiguratsiyasi |
