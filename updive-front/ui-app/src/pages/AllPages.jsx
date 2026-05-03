@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { StatCard, Badge, Icon, TableCard, PageHeader, TD, BarChartSVG, MiniAreaSVG } from '../components/Charts';
-import { getDevices, getAlerts, getPorts, getLogs, getServices, getPollers, getBgp, getSystemInfo, addDevice, deleteDevice, invalidateCache } from '../api';
+import { getDevices, getAlerts, getPorts, getLogs, getServices, getPollers, getBgp, getSystemInfo, addDevice, deleteDevice, updateDevice, invalidateCache } from '../api';
 
 // ─── FORM HELPERS ─────────────────────────────────────────────────
 const F = {
@@ -211,12 +211,141 @@ const AddDeviceModal = ({ accent, onClose, onAdded }) => {
   );
 };
 
+// ─── EDIT DEVICE MODAL ────────────────────────────────────────────
+const EditDeviceModal = ({ device, accent, onClose, onSaved }) => {
+  const [form,    setForm]    = useState({
+    display:      device.display      ?? '',
+    overwrite_ip: device.overwrite_ip ?? device.ip ?? '',
+    community:    device.community    ?? 'public',
+    snmpver:      device.snmpver      ?? 'v2c',
+    port:         String(device.port  ?? 161),
+    notes:        device.notes        ?? '',
+    purpose:      device.purpose      ?? '',
+  });
+  const [loading, setLoading] = useState(false);
+  const [error,   setError]   = useState('');
+
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  const submit = async () => {
+    setLoading(true); setError('');
+    try {
+      const fields = [
+        ['display',      form.display],
+        ['overwrite_ip', form.overwrite_ip.trim() || null],
+        ['community',    form.community],
+        ['snmpver',      form.snmpver],
+        ['port',         Number(form.port) || 161],
+        ['notes',        form.notes],
+        ['purpose',      form.purpose],
+      ];
+      await Promise.all(fields.map(([field, data]) => updateDevice(device.hostname, field, data)));
+      invalidateCache('devices');
+      onSaved();
+      onClose();
+    } catch (e) {
+      setError(e.response?.data?.message || e.message || 'Update failed');
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+      <div style={{ background: '#fff', borderRadius: 12, width: '100%', maxWidth: 480, boxShadow: '0 20px 60px rgba(0,0,0,0.2)', display: 'flex', flexDirection: 'column', maxHeight: '90vh' }}>
+        {/* Header */}
+        <div style={{ padding: '16px 20px', borderBottom: '1px solid #f0f2f5', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexShrink: 0 }}>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: '#111827' }}>Edit Device</div>
+            <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>{device.sysName || device.hostname}</div>
+          </div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#9ca3af', padding: 4 }}>
+            <Icon name="close" size={18} />
+          </button>
+        </div>
+
+        {/* Read-only info */}
+        <div style={{ padding: '12px 20px', background: '#f9fafb', borderBottom: '1px solid #f0f2f5', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, flexShrink: 0 }}>
+          {[
+            ['Hostname',    device.hostname],
+            ['Current IP',  device.ip],
+            ['sysObjectID', device.sysObjectID || '—'],
+            ['Hardware',    device.hardware    || '—'],
+            ['OS',          device.os          || '—'],
+            ['Version',     device.version     || '—'],
+          ].map(([l, v]) => (
+            <div key={l}>
+              <div style={{ fontSize: 9, fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', marginBottom: 1 }}>{l}</div>
+              <div style={{ fontSize: 11, color: '#374151', fontFamily: 'monospace', wordBreak: 'break-all' }}>{v}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Editable fields */}
+        <div style={{ padding: '16px 20px', overflowY: 'auto', flex: 1, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {error && <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: '8px 12px', fontSize: 11, color: '#b91c1c' }}>{error}</div>}
+
+          <div style={{ ...F.row2 }}>
+            <div style={F.group}>
+              <label style={F.label}>Display Name <span style={{ color: '#9ca3af', fontWeight: 400 }}>(UI override)</span></label>
+              <input style={F.input} value={form.display} onChange={e => set('display', e.target.value)} placeholder={device.sysName || device.hostname} />
+            </div>
+            <div style={F.group}>
+              <label style={F.label}>Override IP <span style={{ color: '#9ca3af', fontWeight: 400 }}>(current: {device.ip})</span></label>
+              <input style={F.input} value={form.overwrite_ip} onChange={e => set('overwrite_ip', e.target.value)} placeholder={device.ip} />
+            </div>
+          </div>
+
+          <div style={{ ...F.row2 }}>
+            <div style={F.group}>
+              <label style={F.label}>SNMP Community</label>
+              <input style={F.input} value={form.community} onChange={e => set('community', e.target.value)} placeholder="public" />
+            </div>
+            <div style={F.group}>
+              <label style={F.label}>SNMP Version</label>
+              <select style={F.select} value={form.snmpver} onChange={e => set('snmpver', e.target.value)}>
+                {['v1','v2c','v3'].map(v => <option key={v} value={v}>{v}</option>)}
+              </select>
+            </div>
+          </div>
+
+          <div style={{ ...F.row2 }}>
+            <div style={F.group}>
+              <label style={F.label}>SNMP Port</label>
+              <input style={F.input} value={form.port} onChange={e => set('port', e.target.value)} placeholder="161" />
+            </div>
+            <div style={F.group}>
+              <label style={F.label}>Purpose</label>
+              <input style={F.input} value={form.purpose} onChange={e => set('purpose', e.target.value)} placeholder="Core switch..." />
+            </div>
+          </div>
+
+          <div style={F.group}>
+            <label style={F.label}>Notes</label>
+            <textarea style={{ ...F.input, resize: 'vertical', minHeight: 64 }} value={form.notes} onChange={e => set('notes', e.target.value)} placeholder="Optional notes..." />
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div style={{ padding: '14px 20px', borderTop: '1px solid #f0f2f5', display: 'flex', justifyContent: 'flex-end', gap: 8, flexShrink: 0 }}>
+          <button onClick={onClose} style={{ padding: '7px 16px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', fontSize: 12, fontWeight: 500, cursor: 'pointer', fontFamily: 'inherit', color: '#374151' }}>
+            Cancel
+          </button>
+          <button onClick={submit} disabled={loading} style={{ padding: '7px 20px', borderRadius: 8, border: 'none', background: loading ? '#9ca3af' : accent, color: '#fff', fontSize: 12, fontWeight: 600, cursor: loading ? 'not-allowed' : 'pointer', fontFamily: 'inherit', minWidth: 80 }}>
+            {loading ? 'Saving...' : 'Save'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // ─── DEVICES ──────────────────────────────────────────────────────
 export const DevicesPage = ({ accent, onSelectDevice }) => {
   const [devices,    setDevices]    = useState([]);
   const [filter,     setFilter]     = useState('all');
   const [showModal,  setShowModal]  = useState(false);
-  const [delConfirm, setDelConfirm] = useState(null); // hostname pending delete
+  const [editDevice, setEditDevice] = useState(null);
+  const [delConfirm, setDelConfirm] = useState(null);
   const [deleting,   setDeleting]   = useState(null);
 
   const load = () => {
@@ -242,7 +371,8 @@ export const DevicesPage = ({ accent, onSelectDevice }) => {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      {showModal && <AddDeviceModal accent={accent} onClose={() => setShowModal(false)} onAdded={load} />}
+      {showModal   && <AddDeviceModal  accent={accent} onClose={() => setShowModal(false)}   onAdded={load} />}
+      {editDevice  && <EditDeviceModal accent={accent} onClose={() => setEditDevice(null)} onSaved={load} device={editDevice} />}
 
       <PageHeader title="Devices" desc="All managed devices and their current status."
         action={
@@ -275,7 +405,7 @@ export const DevicesPage = ({ accent, onSelectDevice }) => {
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ background: '#f9fafb' }}>
-                {['Hostname', 'IP Address', 'OS', 'Status', 'Uptime', ''].map(h => (
+                {['Hostname', 'IP Address', 'sysObjectID', 'OS', 'Status', 'Uptime', ''].map(h => (
                   <th key={h} style={{ padding: '9px 14px', fontSize: 10, fontWeight: 600, color: '#6b7280', textAlign: 'left', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{h}</th>
                 ))}
               </tr>
@@ -286,10 +416,27 @@ export const DevicesPage = ({ accent, onSelectDevice }) => {
                   <td style={{ padding: '10px 14px', fontSize: 12, fontWeight: 600, color: accent, cursor: 'pointer' }} onClick={() => onSelectDevice(d.hostname)}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
                       <div style={{ width: 6, height: 6, borderRadius: '50%', background: d.status === 1 ? '#22c55e' : '#ef4444' }} />
-                      {d.hostname}
+                      <div>
+                        <div>{d.sysName || d.hostname}</div>
+                        {d.sysName && d.sysName !== d.hostname && (
+                          <div style={{ fontSize: 10, color: '#9ca3af', fontWeight: 400 }}>{d.hostname}</div>
+                        )}
+                      </div>
                     </div>
                   </td>
                   <td style={{ padding: '10px 14px', fontSize: 11, color: '#6b7280', fontFamily: 'monospace' }}>{d.ip}</td>
+                  <td style={{ padding: '10px 14px' }}>
+                    {d.sysObjectID ? (
+                      <span title={d.sysObjectID} style={{
+                        fontSize: 10, fontFamily: 'monospace', color: '#6366f1',
+                        background: '#eef2ff', padding: '2px 7px', borderRadius: 4,
+                        display: 'inline-block', maxWidth: 160, overflow: 'hidden',
+                        textOverflow: 'ellipsis', whiteSpace: 'nowrap', verticalAlign: 'middle',
+                      }}>
+                        {d.sysObjectID}
+                      </span>
+                    ) : <span style={{ color: '#d1d5db', fontSize: 11 }}>—</span>}
+                  </td>
                   <td style={{ padding: '10px 14px', fontSize: 11, color: '#374151' }}>{d.os || ''}</td>
                   <td style={{ padding: '10px 14px' }}><Badge status={getStatus(d)} /></td>
                   <td style={{ padding: '10px 14px', fontSize: 11, color: '#6b7280' }}>{d.uptime || ''}</td>
@@ -303,9 +450,14 @@ export const DevicesPage = ({ accent, onSelectDevice }) => {
                         <button onClick={() => setDelConfirm(null)} style={{ padding: '3px 10px', borderRadius: 6, border: '1px solid #e5e7eb', background: '#fff', fontSize: 10, cursor: 'pointer', fontFamily: 'inherit', color: '#374151' }}>No</button>
                       </div>
                     ) : (
-                      <button onClick={() => setDelConfirm(d.hostname)} style={{ background: 'none', border: '1px solid #e5e7eb', borderRadius: 6, padding: '3px 10px', fontSize: 10, color: '#9ca3af', cursor: 'pointer', fontFamily: 'inherit' }}>
-                        Delete
-                      </button>
+                      <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                        <button onClick={() => setEditDevice(d)} style={{ background: 'none', border: `1px solid ${accent}40`, borderRadius: 6, padding: '3px 10px', fontSize: 10, color: accent, cursor: 'pointer', fontFamily: 'inherit', fontWeight: 500 }}>
+                          Edit
+                        </button>
+                        <button onClick={() => setDelConfirm(d.hostname)} style={{ background: 'none', border: '1px solid #e5e7eb', borderRadius: 6, padding: '3px 10px', fontSize: 10, color: '#9ca3af', cursor: 'pointer', fontFamily: 'inherit' }}>
+                          Delete
+                        </button>
+                      </div>
                     )}
                   </td>
                 </tr>
@@ -314,31 +466,6 @@ export const DevicesPage = ({ accent, onSelectDevice }) => {
           </table>
         </div>
       </div>
-    </div>
-  );
-};
-
-// ─── ALERTS ───────────────────────────────────────────────────────
-export const AlertsPage = ({ accent }) => {
-  const [alerts, setAlerts] = useState([]);
-  useEffect(() => { getAlerts().then(setAlerts).catch(() => {}); }, []);
-  return (
-    <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
-      <PageHeader title="Alerts" desc="Active and resolved alert conditions." />
-      <div style={{ display:"flex", gap:10 }}>
-        <StatCard label="Total" value={alerts.length} icon="alerts" color="#ef4444" />
-        <StatCard label="Active" value={alerts.filter(a=>a.state===1).length} icon="xCircle" color="#ef4444" />
-      </div>
-      <TableCard headers={["Device","Rule","Severity","State","Timestamp"]} rows={alerts}
-        renderRow={(a,i) => (
-          <tr key={a.id||i} style={{ borderTop:"1px solid #f0f2f5", background:i%2===0?"#fff":"#fafafa" }}>
-            <TD bold>{a.hostname||""}</TD>
-            <TD>{a.rule?.name||a.name||""}</TD>
-            <td style={{ padding:"10px 14px" }}><Badge status={a.severity||"warning"} /></td>
-            <td style={{ padding:"10px 14px" }}><Badge status={a.state===1?"active":"ok"} /></td>
-            <TD>{a.timestamp||""}</TD>
-          </tr>
-        )} />
     </div>
   );
 };

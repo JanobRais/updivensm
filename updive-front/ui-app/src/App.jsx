@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react';
 import { Sidebar, TopBar } from './components/Layout';
 import DashboardPage from './pages/Dashboard';
-import { DevicesPage, AlertsPage, PortsPage, LogsPage, ServicesPage, PollersPage, BgpPage, SystemPage, PlaceholderPage } from './pages/AllPages';
+import { DevicesPage, PortsPage, LogsPage, ServicesPage, PollersPage, BgpPage, SystemPage, PlaceholderPage } from './pages/AllPages';
+import AlertsPage from './pages/AlertsPage';
+import AlertRulesPage from './pages/AlertRulesPage';
 import DeviceDetailsPage from './pages/DeviceDetails';
 
 const ACCENT = "#22c55e";
@@ -56,6 +58,7 @@ function App() {
       case 'devices':       return <DevicesPage accent={ACCENT} onSelectDevice={navigateToDevice} />;
       case 'device-details':return <DeviceDetailsPage hostname={selectedDevice} onBack={() => navigate('devices')} accent={ACCENT} />;
       case 'alerts':        return <AlertsPage accent={ACCENT} />;
+      case 'alert_rules':   return <AlertRulesPage accent={ACCENT} />;
       case 'ports':         return <PortsPage accent={ACCENT} />;
       case 'logs':          return <LogsPage accent={ACCENT} />;
       case 'services':      return <ServicesPage accent={ACCENT} />;

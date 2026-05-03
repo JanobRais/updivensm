@@ -16,6 +16,16 @@ Route::prefix('v0')->group(function (): void {
     Route::get('system', [App\Api\Controllers\LegacyApiController::class, 'server_info'])->name('server_info');
     Route::get('', [App\Api\Controllers\LegacyApiController::class, 'show_endpoints']);
 
+    // Device relationships (parent→child topology)
+    Route::get('device_relationships', function () {
+        $rows = \DB::table('device_relationships')
+            ->join('devices as p', 'p.device_id', '=', 'device_relationships.parent_device_id')
+            ->join('devices as c', 'c.device_id', '=', 'device_relationships.child_device_id')
+            ->select('p.hostname as parent', 'c.hostname as child')
+            ->get();
+        return response()->json(['relationships' => $rows]);
+    });
+
     // Device sub-resource data endpoints (not in legacy API)
     Route::get('devices/{hostname}/processors', function ($hostname) {
         $device = \App\Models\Device::where('hostname', $hostname)->orWhere('ip', $hostname)->firstOrFail();
@@ -207,4 +217,79 @@ Route::prefix('v0')->group(function (): void {
     });
     // Route not found
     Route::any('/{path?}', [App\Api\Controllers\LegacyApiController::class, 'api_not_found'])->where('path', '.*');
+});
+
+// ─── API v1 — Alert endpoints (Zabbix-parity) ────────────────────────────────
+// Completely separate from v0. Does not modify any v0 handler.
+Route::prefix('v1')->group(function (): void {
+    $ctrl = App\Api\Controllers\AlertV1Controller::class;
+
+    // Alerts
+    Route::get('alerts/stats',        [$ctrl, 'stats']);
+    Route::get('alerts/{id}',         [$ctrl, 'show'])->where('id', '[0-9]+');
+    Route::get('alerts',              [$ctrl, 'index']);
+    Route::put('alerts/{id}/ack',     [$ctrl, 'ack'])->where('id', '[0-9]+');
+    Route::put('alerts/{id}/unack',   [$ctrl, 'unack'])->where('id', '[0-9]+');
+    Route::post('alerts/bulk',        [$ctrl, 'bulk']);
+
+    // Alert Rules
+    Route::get('alert-rules/{id}',           [$ctrl, 'showRule'])->where('id', '[0-9]+');
+    Route::get('alert-rules',                [$ctrl, 'listRules']);
+    Route::post('alert-rules',               [$ctrl, 'createRule']);
+    Route::put('alert-rules/{id}',           [$ctrl, 'updateRule'])->where('id', '[0-9]+');
+    Route::delete('alert-rules/{id}',        [$ctrl, 'deleteRule'])->where('id', '[0-9]+');
+    Route::patch('alert-rules/{id}/toggle',  [$ctrl, 'toggleRule'])->where('id', '[0-9]+');
+
+    // Alert Log
+    Route::get('alert-log/{id}',  [$ctrl, 'showLog'])->where('id', '[0-9]+');
+    Route::get('alert-log',       [$ctrl, 'alertLog']);
+
+    // Transports
+    Route::get('alert-transports/{id}',    [$ctrl, 'showTransport'])->where('id', '[0-9]+');
+    Route::get('alert-transports',         [$ctrl, 'listTransports']);
+    Route::post('alert-transports',        [$ctrl, 'createTransport']);
+    Route::put('alert-transports/{id}',    [$ctrl, 'updateTransport'])->where('id', '[0-9]+');
+    Route::delete('alert-transports/{id}', [$ctrl, 'deleteTransport'])->where('id', '[0-9]+');
+});
+
+// ─── API v2 — Alert API (production-grade, Alertmanager/Zabbix parity) ────────
+// Completely isolated from v0 and v1. No existing code is modified.
+Route::prefix('v2')->group(function (): void {
+    $c = App\Api\Controllers\AlertV2Controller::class;
+
+    // ── Alerts: read (no auth required beyond global-read) ───────────────────
+    Route::get('alerts/stats',   [$c, 'stats']);
+    Route::get('alerts/active',  [$c, 'active']);
+    Route::get('alerts/grouped', [$c, 'grouped']);
+    Route::get('alerts/{id}',    [$c, 'show'])->where('id', '[0-9]+');
+    Route::get('alerts',         [$c, 'index']);
+
+    // ── Alerts: single actions ────────────────────────────────────────────────
+    Route::post('alerts/{id}/ack',    [$c, 'ack'])->where('id', '[0-9]+');
+    Route::post('alerts/{id}/unack',  [$c, 'unack'])->where('id', '[0-9]+');
+    Route::post('alerts/{id}/mute',   [$c, 'mute'])->where('id', '[0-9]+');
+    Route::post('alerts/{id}/unmute', [$c, 'unmute'])->where('id', '[0-9]+');
+
+    // ── Alerts: bulk operations ───────────────────────────────────────────────
+    Route::post('alerts/bulk/ack',   [$c, 'bulkAck']);
+    Route::post('alerts/bulk/unack', [$c, 'bulkUnack']);
+    Route::post('alerts/bulk/mute',  [$c, 'bulkMute']);
+
+    // ── Alert rules: full CRUD + toggle ──────────────────────────────────────
+    Route::get('alert-rules/{id}',          [$c, 'showRule'])->where('id', '[0-9]+');
+    Route::get('alert-rules',               [$c, 'listRules']);
+    Route::post('alert-rules',              [$c, 'createRule']);
+    Route::put('alert-rules/{id}',          [$c, 'updateRule'])->where('id', '[0-9]+');
+    Route::delete('alert-rules/{id}',       [$c, 'deleteRule'])->where('id', '[0-9]+');
+    Route::patch('alert-rules/{id}/toggle', [$c, 'toggleRule'])->where('id', '[0-9]+');
+
+    // ── Alert log ─────────────────────────────────────────────────────────────
+    Route::get('alert-log', [$c, 'alertLog']);
+
+    // ── Transports: full CRUD ─────────────────────────────────────────────────
+    Route::get('alert-transports/{id}',    [$c, 'showTransport'])->where('id', '[0-9]+');
+    Route::get('alert-transports',         [$c, 'listTransports']);
+    Route::post('alert-transports',        [$c, 'createTransport']);
+    Route::put('alert-transports/{id}',    [$c, 'updateTransport'])->where('id', '[0-9]+');
+    Route::delete('alert-transports/{id}', [$c, 'deleteTransport'])->where('id', '[0-9]+');
 });

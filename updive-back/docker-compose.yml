@@ -39,5 +39,61 @@ services:
     container_name: updive-nsm-redis
     restart: always
 
+  # ── SNMP Simulators ────────────────────────────────────────────────
+  # Cisco Catalyst 2960-X  |  community: public  |  SNMPv2c
+  snmp-switch-01:
+    image: tandrup/snmpsim:latest
+    container_name: snmp-switch-01
+    hostname: snmp-switch-01
+    restart: always
+    volumes:
+      - ./snmpsim/data/switch-01/public.snmprec:/usr/local/snmpsim/data/public.snmprec:ro
+    ports:
+      - "16101:161/udp"
+
+  # Cisco Catalyst 3750-X  |  community: public  |  SNMPv2c
+  snmp-switch-02:
+    image: tandrup/snmpsim:latest
+    container_name: snmp-switch-02
+    hostname: snmp-switch-02
+    restart: always
+    volumes:
+      - ./snmpsim/data/switch-02/public.snmprec:/usr/local/snmpsim/data/public.snmprec:ro
+    ports:
+      - "16102:161/udp"
+
+  # Cisco Catalyst 2960S  |  SW-SAM-FL1-01  |  Samarqand 1-qavat  |  community: public
+  snmp-switch-03:
+    image: tandrup/snmpsim:latest
+    container_name: snmp-switch-03
+    hostname: snmp-switch-03
+    restart: always
+    volumes:
+      - ./snmpsim/data/switch-03/public.snmprec:/usr/local/snmpsim/data/public.snmprec:ro
+    ports:
+      - "16103:161/udp"
+
+  # Cisco Catalyst 2960S  |  SW-SAM-FL2-01  |  Samarqand 2-qavat  |  community: public
+  snmp-switch-04:
+    image: tandrup/snmpsim:latest
+    container_name: snmp-switch-04
+    hostname: snmp-switch-04
+    restart: always
+    volumes:
+      - ./snmpsim/data/switch-04/public.snmprec:/usr/local/snmpsim/data/public.snmprec:ro
+    ports:
+      - "16104:161/udp"
+
+  # Cisco Catalyst 2960C  |  SW-SAM-MGMT-01  |  Samarqand Management  |  community: public
+  snmp-switch-05:
+    image: tandrup/snmpsim:latest
+    container_name: snmp-switch-05
+    hostname: snmp-switch-05
+    restart: always
+    volumes:
+      - ./snmpsim/data/switch-05/public.snmprec:/usr/local/snmpsim/data/public.snmprec:ro
+    ports:
+      - "16105:161/udp"
+
 volumes:
   db_data:

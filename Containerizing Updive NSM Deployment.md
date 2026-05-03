@@ -2578,3 +2578,327 @@ Delete device:
 - `ob_get_clean()` buffer'ni oladi VA yopadi
 - Keyin `ob_end_clean()` yana yopmoqchi edi → `ob_end_clean(): Failed to delete buffer` xatosi
 - Ortiqcha `ob_end_clean()` qatori o'chirildi
+
+---
+
+## Sessiya 3 — Alert API v1/v2 + Alert Rules UI (2026-05-03)
+
+### Qilingan ishlar
+
+---
+
+**1. Alert API v2 — To'liq backend**
+
+`updive-back/app/Api/Controllers/AlertV2Controller.php` — yangi controller (v0/v1 ga tegmagan):
+
+Endpoints:
+- `GET /api/v2/alerts` — cursor pagination, severity/state/search filter, `whereHas()` subquery
+- `GET /api/v2/alerts/stats` — by_state, by_severity, top_devices, top_rules, histogram, MTTR, storm detection (≥5 fires/hour)
+- `GET /api/v2/alerts/grouped` — `?by=device|rule|severity`, SQL CASE aggregates
+- `GET /api/v2/alerts/{id}` — to'liq detail: component detection, graph URLs, severity trend, related alerts, history
+- `POST /api/v2/alerts/{id}/ack|unack|mute|unmute` — mute `info` JSON fieldda saqlanadi (schema migration yo'q)
+- `POST /api/v2/alerts/bulk/ack|unack|mute` — 500 tagacha bulk operatsiya
+- `GET /api/v2/alert-rules` — cursor paginated, search/severity/disabled filter
+- `GET /api/v2/alert-rules/{id}` — fires_30d, active alerts, devices, groups
+- `POST /api/v2/alert-rules` — yaratish
+- `PUT /api/v2/alert-rules/{id}` — yangilash
+- `DELETE /api/v2/alert-rules/{id}` — o'chirish (cascade)
+- `PATCH /api/v2/alert-rules/{id}/toggle` — enable/disable
+- `GET /api/v2/alert-log` — cursor paginated, date-range filter
+- `GET|POST|PUT|DELETE /api/v2/alert-transports` — transport CRUD
+
+`app/Http/Requests/V2/` — 7 ta Form Request:
+- `AckAlertRequest`, `MuteAlertRequest`, `BulkAlertRequest`
+- `StoreAlertRuleRequest`, `UpdateAlertRuleRequest`
+- `StoreTransportRequest`, `UpdateTransportRequest`
+
+`updive-back/routes/api.php`:
+- v1 block: `Route::prefix('v1')->group(...)` — v0 dan keyin, alohida
+- v2 block: `Route::prefix('v2')->group(...)` — v1 dan keyin, alohida
+- Mavjud v0 routelarga hech narsa o'zgartirilmadi
+
+---
+
+**2. App\Models\Config — kritik bugfix**
+
+`updive-back/app/Models/Config.php` — to'liq yo'q edi, yaratildi:
+- `$table = 'config'`, `$primaryKey = 'config_id'`
+- `scopeWithChildren(Builder $query, string $key)` scope
+- Bu fayl bo'lmaganligi sababli `ConfigRepository.php:338` boot da crash bo'lar edi
+- Natijada barcha API routelar 500 qaytarardi (CORS middleware ham ishlamadi)
+- Tuzatilgach: `composer dump-autoload --optimize` + `php artisan migrate --force`
+
+---
+
+**3. Alert API v2 — Frontend ulash**
+
+`updive-front/ui-app/src/api.js`:
+- `apiV2` axios instance — `baseURL: '/api/v2'`
+- Yangi export funksiyalar: `getAlertsV2`, `getAlertStatsV2`, `getAlertDetailV2`, `getAlertsGrouped`, `getAlertLogV2`, `ackAlertV2`, `unackAlertV2`, `muteAlertV2`, `unmuteAlertV2`, `bulkAckV2`, `bulkUnackV2`, `bulkMuteV2`
+
+`updive-front/ui-app/src/pages/AlertsPage.jsx` — yangi alohida fayl:
+- `StatePill`, `SevDot`, `Spinner`, `ComponentBlock`, `GraphStrip` komponentlari
+- `DetailPanel` — 440px right slide-over: component, graph, trend, related, history, ack/mute actions
+- `BulkBar` — fixed bottom bar: bulk ack/unack/mute
+- `GroupedView` — device/rule/severity bo'yicha guruhlangan jadval
+- `AlertsPage` — stats cards, filter bar (state tabs + severity + search), checkbox table, cursor "Load More"
+
+`updive-front/ui-app/src/App.jsx`:
+- `AlertsPage` import `AllPages.jsx` dan yangi `AlertsPage.jsx` ga ko'chirildi
+
+`updive-front/ui-app/src/pages/AllPages.jsx`:
+- Eski 22 qatorli stub `AlertsPage` o'chirildi
+
+---
+
+**4. Alert Rules — Alohida sahifa**
+
+`updive-front/ui-app/src/pages/AlertRulesPage.jsx` — yangi alohida sahifa:
+- 4 ta stat card: Total, Enabled, Disabled, Critical
+- Search + Severity filter + All/Enabled/Disabled tabs
+- Jadval: Name, Severity, Query preview, Notes, Enable toggle, Edit/Delete actions
+- `Toggle` component — bir klik bilan enable/disable (`PATCH /toggle`)
+- `DetailPanel` — slide-over: query, notes, active alerts, scoped devices/groups, fires_30d
+- `RuleModal` — New Rule / Edit Rule: name, severity, query (monospace textarea), notes, start_disabled, invert_device_map
+- `DeleteConfirm` — cascade warning bilan tasdiq modali
+- Cursor "Load More" pagination
+
+`updive-front/ui-app/src/components/Layout.jsx`:
+- Sidebar Monitoring guruhiga `{ id: "alert_rules", label: "Alert Rules", icon: "settings" }` qo'shildi
+- `breadcrumbMap` ga `alert_rules: ["Monitoring", "Alert Rules"]` qo'shildi
+
+`updive-front/ui-app/src/App.jsx`:
+- `import AlertRulesPage from './pages/AlertRulesPage'`
+- `case 'alert_rules': return <AlertRulesPage accent={ACCENT} />`
+
+---
+
+**5. POST /api/v1/alert-rules — Production-grade create endpoint**
+
+`updive-back/app/Http/Requests/V1/StoreAlertRuleRequest.php` — yangi V1 Form Request:
+
+| Frontend field | DB column | Rule |
+|---|---|---|
+| `rule_name` | `name` | required, unique, max:100 |
+| `severity` | `severity` | ok/warning/critical/info (info→ok) |
+| `query` | `query` | required, max:3000 |
+| `notes` | `notes` | nullable |
+| `start_disabled` | `disabled` | boolean |
+| `invert_device_map` | `invert_map` | boolean |
+
+- `prepareForValidation()` — boolean fieldlarni normalize qiladi
+- Custom `messages()` — aniq o'zbek/ingliz xato xabarlari
+
+`updive-back/app/Api/Controllers/AlertV1Controller.php` — `createRule` yangilandi:
+- `StoreAlertRuleRequest` ishlatadi (avval inline `$request->validate()` edi)
+- `detectUnsafeQuery()` private metod — DROP, DELETE, UPDATE, INSERT, ALTER, TRUNCATE, CREATE, EXEC, CALL, GRANT, REVOKE, LOAD_FILE, `--`, `/*`, `;` bloklaydi
+- Field mapping: frontend nomlar → DB ustun nomlari
+- `extra` uchun LibreNMS default: `{mute:false, count:-1, delay:null, interval:null, recovery:true}`
+- HTTP 201: to'liq rule detail (`id, name, severity, query, notes, disabled, invert_map, operation, created_meta`)
+- HTTP 400: xavfli query aniqlansa (`{"status":"error","message":"Unsafe SQL keyword detected: \"DROP\"..."}`)
+- HTTP 422: validation xatosi (`{"message":"...","errors":{...}}`)
+
+`updive-front/ui-app/src/api.js`:
+- `apiV1` axios instance — `baseURL: '/api/v1'`
+- `createAlertRuleV1(form)` — form field nomlarini V1 API nomlariga translate qiladi, `POST /api/v1/alert-rules`
+
+`updive-front/ui-app/src/pages/AlertRulesPage.jsx`:
+- `handleCreate` → `createAlertRuleV1` chaqiradi (avval `createAlertRuleV2` edi)
+- Read/update/delete/toggle uchun V2 saqlab qolindi
+
+---
+
+### API versiyalari farqi
+
+| Xususiyat | V1 | V2 |
+|---|---|---|
+| Pagination | Offset (`paginate`) | Cursor (`cursorPaginate`) |
+| Mute/Unmute | Yo'q | `info` JSON fieldda |
+| Bulk ops | Bor (ack/unack) | Bor (ack/unack/mute) |
+| Stats | Oddiy | Histogram, MTTR, storm detection |
+| Grouped view | Yo'q | `?by=device\|rule\|severity` |
+| Component detection | Yo'q | Port/sensor/bgp/mempool auto-detect |
+| Query sanitizer | Bor (createRule) | Yo'q (V2 Form Request da) |
+| Form Request | `V1\StoreAlertRuleRequest` | `V2\StoreAlertRuleRequest` |
+
+---
+
+## Sessiya 4 — SNMP Simulator Docker + Dashboard real data
+
+### Maqsad
+LibreNMS/UpdiveNSM ga ulanadigan 2 ta fake Cisco switch yaratish, ularni tizimga qo'shish va Dashboard da real ma'lumot ko'rsatish.
+
+---
+
+### 1. SNMP Simulator (snmpsim) Docker konteynerlari
+
+**Image:** `tandrup/snmpsim:latest` (tayyor image, custom Dockerfile kerak emas)
+
+**Fayl strukturasi:**
+```
+updive-back/
+  snmpsim/
+    data/
+      switch-01/public.snmprec   ← Cisco 2960-X, Toshkent
+      switch-02/public.snmprec   ← Cisco 3750-X, Samarqand
+  docker-compose.yml             ← 2 yangi servis qo'shildi
+```
+
+**`docker-compose.yml` ga qo'shilgan servislar:**
+```yaml
+snmp-switch-01:
+  image: tandrup/snmpsim:latest
+  container_name: snmp-switch-01
+  hostname: snmp-switch-01
+  restart: always
+  volumes:
+    - ./snmpsim/data/switch-01/public.snmprec:/usr/local/snmpsim/data/public.snmprec:ro
+  ports:
+    - "16101:161/udp"
+
+snmp-switch-02:
+  image: tandrup/snmpsim:latest
+  container_name: snmp-switch-02
+  hostname: snmp-switch-02
+  restart: always
+  volumes:
+    - ./snmpsim/data/switch-02/public.snmprec:/usr/local/snmpsim/data/public.snmprec:ro
+  ports:
+    - "16102:161/udp"
+```
+
+**`.snmprec` fayl tuzilishi (tandrup/snmpsim sintaksisi):**
+
+| Tur | Format | Misol |
+|---|---|---|
+| Statik string | `OID\|4\|qiymat` | `1.3.6.1.2.1.1.5.0\|4\|SW-TAS-ACC-01` |
+| Statik int | `OID\|2\|qiymat` | `1.3.6.1.2.1.2.2.1.7.1\|2\|1` |
+| Counter32 auto-increment | `OID\|65:numeric\|rate=N,initial=X,cumulative=1` | ifInOctets |
+| Counter64 auto-increment | `OID\|70:numeric\|rate=N,initial=X,cumulative=1` | ifHCInOctets |
+| TimeTicks (uptime) | `OID\|67:numeric\|rate=100,initial=X` | sysUpTime |
+
+> **Muhim:** `tandrup/snmpsim` da `=counter:` sintaksisi emas, `|type:numeric|` sintaksisi ishlatiladi.
+> `cumulative=1` — har poll orasida real delta hosil qiladi (LibreNMS traffic grafiklari uchun zarur).
+
+**Switch-01 (SW-TAS-ACC-01) interfeyslari:**
+
+| Port | Alias | Status | In (Mbps) | Out (Mbps) |
+|---|---|---|---|---|
+| Gi1/0/1 | Server-01 uplink | UP | ~10 | ~7 |
+| Gi1/0/2 | PC-Office-01 | UP | ~5 | ~3 |
+| Gi1/0/3 | AP-Floor-01 | UP | ~1 | ~0.7 |
+| Gi1/0/4-6 | — | DOWN | 0 | 0 |
+| Gi1/0/47 | Uplink-CORE-SW1 | UP | ~100 | ~80 |
+| Gi1/0/48 | Uplink-CORE-SW2 | UP | ~50 | ~40 |
+
+**Switch-02 (SW-SAM-ACC-01)** — xuddi shu tuzilish, Samarqand lokatsiyasi, 4 ta UP port.
+
+---
+
+### 2. Vite proxy autentifikatsiya
+
+LibreNMS API `X-Auth-Token` talab qiladi. Frontend kodi o'zgartirmasdan, proxy darajasida hal qilindi:
+
+**`updive-front/ui-app/vite.config.js`:**
+```js
+proxy: {
+  '/api': {
+    target: 'http://localhost:8080',
+    changeOrigin: true,
+    headers: { 'X-Auth-Token': '<token>' },
+  },
+  '/graph': {
+    target: 'http://localhost:8080',
+    changeOrigin: true,
+    headers: { 'X-Auth-Token': '<token>' },
+  }
+}
+```
+
+**Admin user va token yaratish:**
+```bash
+# User yaratish
+docker exec -u www-data updive-nsm-app \
+  php /opt/updive-nsm/artisan user:add admin \
+  --password='Updive@2024!' --role=admin --email=admin@updive.uz
+
+# Token DB ga qo'shish
+docker exec updive-nsm-db mysql -uupdive -pupdive_pass updive_nsm -e "
+  INSERT INTO api_tokens (user_id, token_hash, description, disabled)
+  VALUES (1, '<token>', 'Dashboard token', 0);"
+```
+
+---
+
+### 3. Switchlarni tizimga qo'shish
+
+`device:add` artisan komandasi — to'g'ridan-to'g'ri Docker network ichidan SNMP so'rovi:
+
+```bash
+docker exec -u www-data updive-nsm-app \
+  php /opt/updive-nsm/artisan device:add snmp-switch-01 --v2c --community=public
+# → Added device snmp-switch-01 (1)
+
+docker exec -u www-data updive-nsm-app \
+  php /opt/updive-nsm/artisan device:add snmp-switch-02 --v2c --community=public
+# → Added device snmp-switch-02 (2)
+```
+
+**Discovery va polling:**
+```bash
+php artisan device:discover snmp-switch-01   # ~22s, 80 SQL, 2 RRD
+php artisan device:discover snmp-switch-02   # ~22s, 82 SQL, 2 RRD
+php artisan device:poll snmp-switch-01       # 100 RRD create+update
+php artisan device:poll snmp-switch-02       # 98 RRD create+update
+```
+
+**Discovery natijasi:**
+| Qurilma | sysName | OS | Hardware |
+|---|---|---|---|
+| snmp-switch-01 | sw-tas-acc-01 | `ios` | cat29xxStack |
+| snmp-switch-02 | sw-sam-acc-01 | `iosxe` | cat3kStack |
+
+Real traffic (2-chi poll dan keyin):
+
+| Port | In (Mbps) | Out (Mbps) |
+|---|---|---|
+| SW-01 Gi1/0/47 Uplink-CORE-SW1 | 166.1 | 132.9 |
+| SW-01 Gi1/0/48 Uplink-CORE-SW2 | 83.1 | 66.5 |
+| SW-02 Gi1/0/47 Uplink-CORE-SW1 | 132.9 | 99.7 |
+| SW-02 Gi1/0/1 DB-Server-01 | 106.4 | 24.9 |
+
+---
+
+### 4. Dashboard.jsx — real data bilan yangilash
+
+**Real bo'lgan qismlar (o'zgarmadi):**
+- Devices Up/Down/Total — `getDevices()` dan
+- Active Alerts — `getAlerts()` dan
+- Total Traffic stat card — `getPorts()` `ifInOctets_rate` summasi
+- Traffic Chart — real port delta (2+ sample to'plangandan keyin)
+- Top Interfaces — real port rate bilan progress bar
+- Event Log — `getLogs()` dan real hodisalar
+
+**Static bo'lgan, real qilingan qismlar:**
+
+| Widget | Oldin | Keyin |
+|---|---|---|
+| Network Topology | CORE-SW1, DIST-SW1, ACC-01… (fictional) | Real device nomlari, yashil/qizil status |
+| Traffic Heatmap | CORE-SW1, CORE-SW2 fictional nomlar | Real sysName, real utilization % + kunlik pattern |
+| Device Health gauge | `[81, 70, 57, 44, 33]` hardcoded | Real link utilization: `(in+out bytes * 8) / total capacity * 100` |
+| Sites Overview | Static 320/280/108/64 devs | Real devices dan: sysName pattern → shahar (TAS→Toshkent, SAM→Samarqand) |
+| Network Uptime | `99.2%` hardcoded | Real: `device.uptime / (30 * 24 * 3600) * 100` |
+
+**Muhim texnik qarorlar:**
+
+- CPU OIDlari snmprec da yo'qligi sababli `getDeviceProcessors()` 0 qaytaradi → `healthDevs` uchun **link utilization** ishlatildi (in+out rate / ifSpeed capacity)
+- Topology komponent static nodes o'rniga `devices` prop dan dinamik quriladi
+- Heatmap `DAY_PATTERN[hour]` massivi orqali hozirgi real utilization ni kechayu kunduzga proporsional scale qiladi
+- Sites `sysName` dagi `tas|sam|nam|far` pattern bilan shahar aniqlanadi
+
+**Fayl o'zgarishlari:**
+- `updive-front/ui-app/src/pages/Dashboard.jsx` — Topology, Heatmap, healthDevs, sites, uptimePct
+- `updive-front/ui-app/vite.config.js` — X-Auth-Token proxy headers
+- `updive-back/docker-compose.yml` — snmp-switch-01, snmp-switch-02 servislar
+- `updive-back/snmpsim/data/switch-01/public.snmprec` — yangi fayl
+- `updive-back/snmpsim/data/switch-02/public.snmprec` — yangi fayl

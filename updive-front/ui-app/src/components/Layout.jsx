@@ -10,6 +10,7 @@ const navGroups = [
   ]},
   { label: "Monitoring", items: [
     { id: "alerts", label: "Alerts", icon: "alerts" },
+    { id: "alert_rules", label: "Alert Rules", icon: "settings" },
     { id: "services", label: "Services", icon: "services" },
     { id: "logs", label: "Event Logs", icon: "logs" },
     { id: "pollers", label: "Pollers", icon: "pollers" },
@@ -121,7 +122,7 @@ export const Sidebar = ({ active, onNav, collapsed, accent }) => (
 const breadcrumbMap = {
   dashboard: ["Home", "Dashboard"], devices: ["Home", "Devices"], device_groups: ["Home", "Device Groups"],
   ports: ["Interfaces", "Ports"], port_groups: ["Interfaces", "Port Groups"], arp: ["Interfaces", "ARP Table"],
-  alerts: ["Monitoring", "Alerts"], services: ["Monitoring", "Services"], logs: ["Monitoring", "Event Logs"],
+  alerts: ["Monitoring", "Alerts"], alert_rules: ["Monitoring", "Alert Rules"], services: ["Monitoring", "Services"], logs: ["Monitoring", "Event Logs"],
   pollers: ["Monitoring", "Pollers"], poller_groups: ["Monitoring", "Poller Groups"],
   bgp: ["Routing", "BGP"], ospf: ["Routing", "OSPF"], vrf: ["Routing", "VRFs"],
   vlans: ["Switching", "VLANs"], port_security: ["Switching", "Port Security"],

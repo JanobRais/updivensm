@@ -218,3 +218,13 @@ Schedule::command(MaintenanceRefreshSslCertificates::class)
     ->onOneServer()
     ->appendOutputTo($maintenance_log_file)
     ->onFailure(fn () => Eventlog::log('The scheduled command maintenance:refresh-ssl-certificates failed to run. Check the maintenance.log for details.', null, 'maintenance', Severity::Error));
+
+Schedule::command('device:poll all')
+    ->everyFiveMinutes()
+    ->withoutOverlapping(5)
+    ->runInBackground();
+
+Schedule::command('device:discover all')
+    ->hourly()
+    ->withoutOverlapping(55)
+    ->runInBackground();
