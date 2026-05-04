@@ -118,8 +118,8 @@ const TimeRangeBar = ({ value, onChange, accent }) => (
 
 // ─── Switch Front Panel ───────────────────────────────────────────
 const SwitchPanel = ({ ports, selectedPort, onSelect, links = [] }) => {
-  // 2 rows for >12 ports (like real switches: 48-port = 2×24, 24-port = 2×12)
-  const ROW = ports.length <= 12 ? ports.length : Math.ceil(ports.length / 2);
+  // Display max 24 ports per row
+  const ROW = 24;
   // Map: port_id → link object (remote_hostname, remote_port)
   const linkMap = {};
   links.forEach(l => { linkMap[l.local_port_id] = l; });
