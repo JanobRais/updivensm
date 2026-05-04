@@ -1,8 +1,9 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { PageHeader, StatCard, Badge, TableCard, TD } from '../components/Charts';
 import {
   getDeviceDetails, getDevicePorts, getDeviceProcessors,
   getDeviceMempools, getDeviceAlerts, getDeviceEventlog, getDeviceLinks,
+  getMetrics,
 } from '../api';
 
 const fmt = {
@@ -46,7 +47,7 @@ const TIME_RANGES = [
   { label: '30d', value: '-1M' },
 ];
 
-const TABS = ['Overview', 'Interfaces', 'CPU', 'Memory', 'Alerts', 'Eventlog', 'Graphs'];
+const TABS = ['Overview', 'Interfaces', 'CPU', 'Memory', 'Alerts', 'Eventlog', 'Metrics', 'Graphs'];
 
 const Section = ({ title, children, action }) => (
   <div style={{ background: '#fff', borderRadius: 10, border: '1px solid #e8ecf0', overflow: 'hidden' }}>
@@ -323,6 +324,84 @@ const PortDetail = ({ port, accent, link }) => {
   );
 };
 
+// ─── Metrics mini-dashboard ───────────────────────────────────────
+const M_DEFS = [
+  { type: 'cpu',      label: 'CPU Usage',    unit: '%',   color: '#f59e0b' },
+  { type: 'mem',      label: 'Memory',       unit: '%',   color: '#ef4444' },
+  { type: 'port_in',  label: 'Traffic In',   unit: 'Bps', color: '#3b82f6' },
+  { type: 'port_out', label: 'Traffic Out',  unit: 'Bps', color: '#8b5cf6' },
+];
+
+const M_PRESETS = [
+  { label: '1h',  h: 1   },
+  { label: '6h',  h: 6   },
+  { label: '24h', h: 24  },
+  { label: '7d',  h: 168 },
+];
+
+function mAgo(hours) {
+  const d = new Date(); d.setHours(d.getHours() - hours);
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:00`;
+}
+
+function mFmt(v, unit) {
+  if (v === null || v === undefined) return '—';
+  if (unit === 'Bps') {
+    if (v >= 1e9) return (v/1e9).toFixed(1) + ' GB/s';
+    if (v >= 1e6) return (v/1e6).toFixed(1) + ' MB/s';
+    if (v >= 1e3) return (v/1e3).toFixed(1) + ' KB/s';
+    return Number(v).toFixed(0) + ' B/s';
+  }
+  if (unit === '%') return Number(v).toFixed(1) + '%';
+  return Number(v).toFixed(2);
+}
+
+function MiniChart({ uid, data, unit, color }) {
+  const W = 500, H = 120, PL = 52, PR = 8, PT = 6, PB = 20;
+  const iW = W-PL-PR, iH = H-PT-PB;
+  if (!data || data.length < 2) return (
+    <div style={{ height: 120, display:'flex', alignItems:'center', justifyContent:'center',
+      color:'#9ca3af', fontSize:11, background:'#f9fafb', borderRadius:6 }}>No data</div>
+  );
+  const vals  = data.map(d => Number(d.value));
+  const times = data.map(d => new Date(d.collected_at.replace(' ','T')).getTime());
+  const minV  = Math.min(...vals), maxV = Math.max(...vals);
+  const minT  = Math.min(...times), maxT = Math.max(...times);
+  const rv = maxV - minV || 1, rt = maxT - minT || 1;
+  const px = t => PL + ((t-minT)/rt)*iW;
+  const py = v => PT + iH - ((v-minV)/rv)*iH;
+  const pts  = data.map((_,i) => `${px(times[i])},${py(vals[i])}`).join(' ');
+  const area = `M${px(times[0])},${PT+iH} ` + data.map((_,i) => `L${px(times[i])},${py(vals[i])}`).join(' ') + ` L${px(times[times.length-1])},${PT+iH} Z`;
+  const yTks = [0,1,2,3].map(i => minV + (rv/3)*i);
+  const xTks = [0,1,2,3].map(i => minT + (rt/3)*i);
+  return (
+    <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ display:'block' }}>
+      <defs>
+        <linearGradient id={`mg-${uid}`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={color} stopOpacity="0.2"/>
+          <stop offset="100%" stopColor={color} stopOpacity="0.01"/>
+        </linearGradient>
+      </defs>
+      {yTks.map((v,i) => (
+        <g key={i}>
+          <line x1={PL} x2={W-PR} y1={py(v)} y2={py(v)} stroke="#f0f2f5" strokeWidth="1"/>
+          <text x={PL-4} y={py(v)+4} textAnchor="end" fontSize={8} fill="#9ca3af">{mFmt(v,unit)}</text>
+        </g>
+      ))}
+      {xTks.map((t,i) => {
+        const d = new Date(t);
+        const l = rt > 86400000
+          ? `${d.getMonth()+1}/${d.getDate()}`
+          : `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+        return <text key={i} x={px(t)} y={H-3} textAnchor="middle" fontSize={8} fill="#9ca3af">{l}</text>;
+      })}
+      <path d={area} fill={`url(#mg-${uid})`}/>
+      <polyline points={pts} fill="none" stroke={color} strokeWidth="1.6" strokeLinejoin="round" strokeLinecap="round"/>
+    </svg>
+  );
+}
+
 // ─── Main Page ────────────────────────────────────────────────────
 const DeviceDetailsPage = ({ hostname, onBack, accent }) => {
   const [device,     setDevice]    = useState(null);
@@ -336,6 +415,13 @@ const DeviceDetailsPage = ({ hostname, onBack, accent }) => {
   const [timeRange,  setTimeRange] = useState('-1d');
   const [selPort,    setSelPort]   = useState(null);
   const [links,      setLinks]     = useState([]);
+
+  // Metrics tab state
+  const [mPreset,   setMPreset]   = useState('6h');
+  const [mPortId,   setMPortId]   = useState(null);
+  const [mData,     setMData]     = useState({});
+  const [mLoading,  setMLoading]  = useState(false);
+  const [mTick,     setMTick]     = useState(0);
 
   useEffect(() => {
     setLoading(true);
@@ -360,6 +446,27 @@ const DeviceDetailsPage = ({ hostname, onBack, accent }) => {
       setLoading(false);
     }).catch(() => setLoading(false));
   }, [hostname]);
+
+  // Load metrics when Metrics tab is active
+  useEffect(() => {
+    if (tab !== 'Metrics' || !device) return;
+    const devId = device.device_id;
+    const hours  = M_PRESETS.find(p => p.label === mPreset)?.h ?? 6;
+    const from   = mAgo(hours);
+    const to     = (() => { const d = new Date(); const p = n => String(n).padStart(2,'0'); return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:00`; })();
+    const portId = mPortId ?? ports[0]?.port_id ?? null;
+    setMLoading(true);
+    Promise.all(M_DEFS.map(mt => {
+      const params = { device_id: devId, metric_type: mt.type, from, to, resolution:'auto', limit:500 };
+      if ((mt.type === 'port_in' || mt.type === 'port_out') && portId) params.object_id = portId;
+      return getMetrics(params).then(r => ({ type: mt.type, rows: r.metrics ?? [] })).catch(() => ({ type: mt.type, rows: [] }));
+    })).then(results => {
+      const d = {};
+      results.forEach(r => { d[r.type] = r.rows; });
+      setMData(d);
+      setMLoading(false);
+    });
+  }, [tab, device, mPreset, mPortId, mTick]);
 
   if (loading) return <div style={{ padding: 40, textAlign: 'center', color: '#9ca3af' }}>Loading SNMP data...</div>;
   if (!device)  return <div style={{ padding: 40, textAlign: 'center', color: '#ef4444' }}>Device not found.</div>;
@@ -612,6 +719,92 @@ const DeviceDetailsPage = ({ hostname, onBack, accent }) => {
             }
           </div>
         </Section>
+      )}
+
+      {/* ── Metrics ────────────────────────────────────────────────── */}
+      {tab === 'Metrics' && (
+        <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
+          {/* Controls */}
+          <div style={{ background:'#fff', borderRadius:10, border:'1px solid #e8ecf0', padding:'10px 16px',
+            display:'flex', gap:10, alignItems:'center', flexWrap:'wrap' }}>
+            <span style={{ fontSize:11, color:'#6b7280', fontWeight:600 }}>Range:</span>
+            {M_PRESETS.map(p => (
+              <button key={p.label} onClick={() => setMPreset(p.label)} style={{
+                padding:'4px 12px', borderRadius:20, border:'none', fontSize:11, fontWeight:500,
+                cursor:'pointer', fontFamily:'inherit',
+                background: mPreset === p.label ? accent : '#f3f4f6',
+                color:       mPreset === p.label ? '#fff' : '#6b7280',
+              }}>{p.label}</button>
+            ))}
+            {ports.length > 0 && (
+              <>
+                <span style={{ fontSize:11, color:'#6b7280', fontWeight:600, marginLeft:6 }}>Port:</span>
+                <select
+                  value={mPortId ?? ports[0]?.port_id ?? ''}
+                  onChange={e => setMPortId(Number(e.target.value))}
+                  style={{ padding:'4px 8px', fontSize:11, border:'1px solid #e5e7eb', borderRadius:6,
+                    fontFamily:'inherit', cursor:'pointer', outline:'none', color:'#374151' }}>
+                  {ports.map(p => <option key={p.port_id} value={p.port_id}>{p.ifName}</option>)}
+                </select>
+              </>
+            )}
+            <button onClick={() => setMTick(t => t+1)} disabled={mLoading} style={{
+              marginLeft:'auto', padding:'5px 14px', fontSize:11, fontWeight:600, border:'none',
+              borderRadius:7, background:accent, color:'#fff', cursor:'pointer', fontFamily:'inherit',
+              opacity: mLoading ? 0.6 : 1 }}>
+              {mLoading ? 'Loading…' : 'Refresh'}
+            </button>
+          </div>
+
+          {/* 2×2 chart grid */}
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14 }}>
+            {M_DEFS.map(mt => {
+              const rows = mData[mt.type] ?? [];
+              const last = rows.length > 0 ? rows[rows.length-1]?.value : null;
+              return (
+                <div key={mt.type} style={{ background:'#fff', borderRadius:10, border:'1px solid #e8ecf0', padding:'12px 14px' }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8 }}>
+                    <span style={{ fontSize:12, fontWeight:700, color:'#111827' }}>{mt.label}</span>
+                    <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                      {last !== null && (
+                        <span style={{ fontSize:12, fontWeight:700, color: mt.color }}>{mFmt(last, mt.unit)}</span>
+                      )}
+                      <span style={{ fontSize:10, color:'#9ca3af' }}>{rows.length} pts</span>
+                    </div>
+                  </div>
+                  <MiniChart uid={`${mt.type}-${devId}`} data={rows} unit={mt.unit} color={mt.color} />
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Stats summary row */}
+          {Object.keys(mData).length > 0 && (
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:12 }}>
+              {M_DEFS.map(mt => {
+                const rows = mData[mt.type] ?? [];
+                if (!rows.length) return null;
+                const vals = rows.map(r => Number(r.value));
+                const avg  = vals.reduce((a,b)=>a+b,0)/vals.length;
+                const max  = Math.max(...vals);
+                const min  = Math.min(...vals);
+                return (
+                  <div key={mt.type} style={{ background:'#fff', borderRadius:10, border:'1px solid #e8ecf0', padding:'12px 16px' }}>
+                    <div style={{ fontSize:10, fontWeight:700, color:'#9ca3af', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:8 }}>{mt.label}</div>
+                    <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
+                      {[['Avg', avg], ['Max', max], ['Min', min]].map(([lbl, val]) => (
+                        <div key={lbl} style={{ display:'flex', justifyContent:'space-between', fontSize:11 }}>
+                          <span style={{ color:'#6b7280' }}>{lbl}</span>
+                          <span style={{ fontWeight:600, color: lbl==='Max' ? mt.color : '#374151' }}>{mFmt(val, mt.unit)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
       )}
 
       {/* ── Graphs ─────────────────────────────────────────────────── */}

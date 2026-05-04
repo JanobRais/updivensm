@@ -26,6 +26,80 @@ Route::prefix('v0')->group(function (): void {
         return response()->json(['relationships' => $rows]);
     });
 
+    // ── Services CRUD (bypasses Nagios plugin check) ─────────────
+    Route::prefix('services')->group(function (): void {
+        Route::post('', function (\Illuminate\Http\Request $req) {
+            $req->validate([
+                'device_id'    => 'required|integer|exists:devices,device_id',
+                'service_type' => 'required|string|max:255',
+            ]);
+            $id = \DB::table('services')->insertGetId([
+                'device_id'       => $req->input('device_id'),
+                'service_type'    => $req->input('service_type'),
+                'service_name'    => $req->input('service_name', ''),
+                'service_desc'    => $req->input('service_desc', ''),
+                'service_ip'      => $req->input('service_ip', ''),
+                'service_param'   => $req->input('service_param', ''),
+                'service_ignore'  => $req->boolean('service_ignore') ? 1 : 0,
+                'service_disabled'=> $req->boolean('service_disabled') ? 1 : 0,
+                'service_status'  => 3,
+                'service_message' => '',
+                'service_changed' => 0,
+                'service_template_id' => 0,
+            ]);
+            return response()->json(['status' => 'ok', 'message' => 'Service created', 'service_id' => $id], 201);
+        });
+
+        Route::patch('{id}', function (\Illuminate\Http\Request $req, $id) {
+            $fields = $req->only(['service_type','service_name','service_desc','service_ip','service_param','service_disabled','service_ignore']);
+            if (isset($fields['service_disabled'])) $fields['service_disabled'] = $fields['service_disabled'] ? 1 : 0;
+            if (isset($fields['service_ignore']))   $fields['service_ignore']   = $fields['service_ignore']   ? 1 : 0;
+            \DB::table('services')->where('service_id', $id)->update($fields);
+            return response()->json(['status' => 'ok', 'message' => 'Service updated']);
+        })->where('id', '[0-9]+');
+
+        Route::delete('{id}', function ($id) {
+            \DB::table('services')->where('service_id', $id)->delete();
+            return response()->json(['status' => 'ok', 'message' => 'Service deleted']);
+        })->where('id', '[0-9]+');
+    });
+
+    // ── Eventlog with full filtering + pagination ─────────────────
+    Route::get('eventlog', function (\Illuminate\Http\Request $req) {
+        $perPage = min((int) $req->input('per_page', 50), 500);
+        $page    = max((int) $req->input('page', 1), 1);
+        $offset  = ($page - 1) * $perPage;
+
+        $q = \DB::table('eventlog')
+            ->join('devices', 'devices.device_id', '=', 'eventlog.device_id')
+            ->select(
+                'eventlog.event_id', 'eventlog.device_id', 'eventlog.datetime',
+                'eventlog.message',  'eventlog.type',      'eventlog.severity',
+                'eventlog.username', 'eventlog.reference',
+                'devices.hostname',  'devices.sysName'
+            );
+
+        if ($req->filled('from'))     $q->where('eventlog.datetime', '>=', $req->input('from'));
+        if ($req->filled('to'))       $q->where('eventlog.datetime', '<=', $req->input('to'));
+        if ($req->filled('device_id'))$q->where('eventlog.device_id', $req->input('device_id'));
+        if ($req->filled('hostname')) $q->where('devices.hostname', $req->input('hostname'));
+        if ($req->filled('type'))     $q->where('eventlog.type',     $req->input('type'));
+        if ($req->filled('severity')) $q->where('eventlog.severity', $req->input('severity'));
+        if ($req->filled('search'))   $q->where('eventlog.message',  'like', '%'.$req->input('search').'%');
+
+        $total = $q->count();
+        $logs  = $q->orderByDesc('eventlog.event_id')->offset($offset)->limit($perPage)->get();
+
+        return response()->json([
+            'status'   => 'ok',
+            'logs'     => $logs,
+            'total'    => $total,
+            'page'     => $page,
+            'per_page' => $perPage,
+            'pages'    => (int) ceil($total / $perPage),
+        ]);
+    });
+
     // Device sub-resource data endpoints (not in legacy API)
     Route::get('devices/{hostname}/processors', function ($hostname) {
         $device = \App\Models\Device::where('hostname', $hostname)->orWhere('ip', $hostname)->firstOrFail();
@@ -61,7 +135,20 @@ Route::prefix('v0')->group(function (): void {
         Route::get('rules', [App\Api\Controllers\LegacyApiController::class, 'list_alert_rules'])->name('list_alert_rules');
         Route::get('routing/vrf/{id}', [App\Api\Controllers\LegacyApiController::class, 'get_vrf'])->name('get_vrf');
         Route::get('routing/ipsec/data/{hostname}', [App\Api\Controllers\LegacyApiController::class, 'list_ipsec'])->name('list_ipsec');
-        Route::get('services', [App\Api\Controllers\LegacyApiController::class, 'list_services'])->name('list_services');
+        Route::get('services', function (\Illuminate\Http\Request $req) {
+            $q = \DB::table('services')
+                ->join('devices', 'devices.device_id', '=', 'services.device_id')
+                ->select(
+                    'services.service_id', 'services.device_id', 'services.service_type',
+                    'services.service_name', 'services.service_desc', 'services.service_ip',
+                    'services.service_param', 'services.service_status', 'services.service_message',
+                    'services.service_disabled', 'services.service_ignore', 'services.service_changed',
+                    'devices.hostname', 'devices.sysName'
+                );
+            if ($req->filled('hostname')) $q->where('devices.hostname', $req->input('hostname'));
+            $rows = $q->orderBy('services.service_id')->get();
+            return response()->json(['status' => 'ok', 'services' => $rows, 'count' => $rows->count()]);
+        })->name('list_services');
         Route::get('services/{hostname}', [App\Api\Controllers\LegacyApiController::class, 'list_services'])->name('list_services_device');
 
         Route::prefix('resources')->group(function (): void {
@@ -83,6 +170,258 @@ Route::prefix('v0')->group(function (): void {
 
     // admin required
     Route::middleware(['can:admin'])->group(function (): void {
+
+        // ── Metrics history ───────────────────────────────────────────
+        // GET /api/v0/metrics/objects?device_id=1&metric_type=port_in
+        Route::get('metrics/objects', function (\Illuminate\Http\Request $req) {
+            $q = \DB::table('updive_metrics')
+                ->select('object_id', 'object_name')
+                ->distinct();
+            if ($req->has('device_id'))   $q->where('device_id',   $req->input('device_id'));
+            if ($req->has('metric_type')) $q->where('metric_type', $req->input('metric_type'));
+            return response()->json(['status' => 'ok', 'objects' => $q->orderBy('object_name')->get()]);
+        });
+
+        // GET /api/v0/metrics?device_id=1&metric_type=cpu&object_id=1&from=2026-04-01&to=2026-05-04&resolution=auto
+        Route::get('metrics', function (\Illuminate\Http\Request $req) {
+            $from       = $req->input('from', now()->subHours(6)->toDateTimeString());
+            $to         = $req->input('to',   now()->toDateTimeString());
+            $resolution = $req->input('resolution', 'auto');
+            $limit      = min((int) $req->input('limit', 2000), 10000);
+
+            $q = \DB::table('updive_metrics')
+                ->whereBetween('collected_at', [$from, $to]);
+
+            if ($req->has('device_id'))   $q->where('device_id',   $req->input('device_id'));
+            if ($req->has('metric_type')) $q->where('metric_type', $req->input('metric_type'));
+            if ($req->has('object_id'))   $q->where('object_id',   $req->input('object_id'));
+
+            // auto resolution: aggregate if range > 24h
+            $diffHours = (strtotime($to) - strtotime($from)) / 3600;
+
+            if ($resolution === 'auto') {
+                if ($diffHours > 24 * 7)       $resolution = 'day';
+                elseif ($diffHours > 24)        $resolution = 'hour';
+                else                            $resolution = 'raw';
+            }
+
+            // Build WHERE bindings for raw SQL (avoids ONLY_FULL_GROUP_BY alias conflict)
+            $bindings = [$from, $to];
+            $wheres   = 'WHERE m.collected_at BETWEEN ? AND ?';
+            if ($req->has('device_id'))   { $wheres .= ' AND m.device_id = ?';   $bindings[] = $req->input('device_id'); }
+            if ($req->has('metric_type')) { $wheres .= ' AND m.metric_type = ?'; $bindings[] = $req->input('metric_type'); }
+            if ($req->has('object_id'))   { $wheres .= ' AND m.object_id = ?';   $bindings[] = $req->input('object_id'); }
+
+            if ($resolution === 'day') {
+                $bindings[] = $limit;
+                $rows = collect(\DB::select("
+                    SELECT m.device_id, m.metric_type, m.object_id, m.object_name, m.unit,
+                           DATE_FORMAT(m.collected_at, '%Y-%m-%d 00:00:00') AS collected_at,
+                           AVG(m.value) AS value, MIN(m.value) AS value_min, MAX(m.value) AS value_max
+                    FROM updive_metrics m
+                    {$wheres}
+                    GROUP BY m.device_id, m.metric_type, m.object_id, m.object_name, m.unit,
+                             DATE_FORMAT(m.collected_at, '%Y-%m-%d 00:00:00')
+                    ORDER BY DATE_FORMAT(m.collected_at, '%Y-%m-%d 00:00:00')
+                    LIMIT ?
+                ", $bindings));
+            } elseif ($resolution === 'hour') {
+                $bindings[] = $limit;
+                $rows = collect(\DB::select("
+                    SELECT m.device_id, m.metric_type, m.object_id, m.object_name, m.unit,
+                           DATE_FORMAT(m.collected_at, '%Y-%m-%d %H:00:00') AS collected_at,
+                           AVG(m.value) AS value, MIN(m.value) AS value_min, MAX(m.value) AS value_max
+                    FROM updive_metrics m
+                    {$wheres}
+                    GROUP BY m.device_id, m.metric_type, m.object_id, m.object_name, m.unit,
+                             DATE_FORMAT(m.collected_at, '%Y-%m-%d %H:00:00')
+                    ORDER BY DATE_FORMAT(m.collected_at, '%Y-%m-%d %H:00:00')
+                    LIMIT ?
+                ", $bindings));
+            } else {
+                $rows = $q->select(
+                    'device_id', 'metric_type', 'object_id', 'object_name', 'unit',
+                    'collected_at', 'value',
+                    \DB::raw('value AS value_min'),
+                    \DB::raw('value AS value_max')
+                )->orderBy('collected_at')->limit($limit)->get();
+            }
+
+            return response()->json([
+                'status'     => 'ok',
+                'resolution' => $resolution,
+                'from'       => $from,
+                'to'         => $to,
+                'count'      => $rows->count(),
+                'metrics'    => $rows,
+            ]);
+        });
+
+        // ── System stats (dashboard panel) ────────────────────────────
+        Route::get('system/stats', function () {
+            $stats = \DB::selectOne("
+                SELECT
+                  (SELECT COUNT(*) FROM devices)                        AS devices_total,
+                  (SELECT COUNT(*) FROM devices WHERE status=1)         AS devices_up,
+                  (SELECT COUNT(*) FROM ports)                          AS ports_total,
+                  (SELECT COUNT(*) FROM ports WHERE ifOperStatus='up')  AS ports_up,
+                  (SELECT COUNT(*) FROM alerts WHERE state=1)           AS alerts_active,
+                  (SELECT COUNT(*) FROM alert_rules WHERE disabled=0)   AS rules_enabled,
+                  (SELECT COUNT(*) FROM eventlog)                       AS events_total,
+                  (SELECT MAX(datetime) FROM eventlog)                  AS last_event
+            ");
+            $devices = \DB::table('devices')
+                ->select('device_id','hostname','sysName','status','uptime','last_polled','last_discovered')
+                ->orderBy('device_id')->get();
+            $db_tables = \DB::select("
+                SELECT table_name, table_rows,
+                  ROUND(data_length/1024/1024,2)  AS data_mb,
+                  ROUND(index_length/1024/1024,2) AS index_mb
+                FROM information_schema.tables
+                WHERE table_schema = DATABASE()
+                ORDER BY data_length DESC LIMIT 10
+            ");
+            return response()->json([
+                'status'    => 'ok',
+                'stats'     => $stats,
+                'devices'   => $devices,
+                'db_tables' => $db_tables,
+            ]);
+        });
+
+        // ── System config ─────────────────────────────────────────────
+        Route::get('config', function () {
+            $rows = \DB::table('config')->orderBy('config_name')->get(['config_name', 'config_value']);
+            return response()->json(['status' => 'ok', 'config' => $rows]);
+        });
+        Route::patch('config', function (\Illuminate\Http\Request $req) {
+            $req->validate(['config_name' => 'required|string', 'config_value' => 'required']);
+            \DB::table('config')->updateOrInsert(
+                ['config_name' => $req->input('config_name')],
+                ['config_value' => $req->input('config_value')]
+            );
+            return response()->json(['status' => 'ok', 'message' => 'Config updated']);
+        });
+
+        // ── Users CRUD + API tokens ───────────────────────────────────
+        Route::prefix('users')->group(function (): void {
+            Route::get('', function () {
+                $users = \App\Models\User::with('roles', 'apiTokens')->get()
+                    ->map(fn ($u) => [
+                        'user_id'           => $u->user_id,
+                        'username'          => $u->username,
+                        'realname'          => $u->realname,
+                        'email'             => $u->email,
+                        'descr'             => $u->descr,
+                        'enabled'           => (bool) $u->enabled,
+                        'can_modify_passwd' => (bool) $u->can_modify_passwd,
+                        'auth_type'         => $u->auth_type,
+                        'role'              => $u->roles->first()?->name ?? 'user',
+                        'token_count'       => $u->apiTokens->count(),
+                        'created_at'        => $u->created_at,
+                        'updated_at'        => $u->updated_at,
+                    ]);
+                return response()->json(['status' => 'ok', 'users' => $users, 'count' => $users->count()]);
+            });
+
+            Route::get('{id}', function ($id) {
+                $u = \App\Models\User::with('roles', 'apiTokens')->findOrFail($id);
+                return response()->json(['status' => 'ok', 'user' => [
+                    'user_id'           => $u->user_id,
+                    'username'          => $u->username,
+                    'realname'          => $u->realname,
+                    'email'             => $u->email,
+                    'descr'             => $u->descr,
+                    'enabled'           => (bool) $u->enabled,
+                    'can_modify_passwd' => (bool) $u->can_modify_passwd,
+                    'auth_type'         => $u->auth_type,
+                    'role'              => $u->roles->first()?->name ?? 'user',
+                    'token_count'       => $u->apiTokens->count(),
+                    'created_at'        => $u->created_at,
+                    'updated_at'        => $u->updated_at,
+                ]]);
+            })->where('id', '[0-9]+');
+
+            Route::post('', function (\Illuminate\Http\Request $req) {
+                $req->validate([
+                    'username' => 'required|string|max:255|unique:users,username',
+                    'password' => 'required|string|min:6',
+                    'realname' => 'nullable|string|max:64',
+                    'email'    => 'nullable|email|max:64',
+                    'role'     => 'nullable|in:admin,global-read,user',
+                ]);
+                $u = new \App\Models\User([
+                    'username'          => $req->input('username'),
+                    'realname'          => $req->input('realname', ''),
+                    'email'             => $req->input('email', ''),
+                    'descr'             => $req->input('descr', ''),
+                    'auth_type'         => 'mysql',
+                    'can_modify_passwd' => 1,
+                    'enabled'           => 1,
+                ]);
+                $u->setPassword($req->input('password'));
+                $u->save();
+                $u->syncRoles([$req->input('role', 'user')]);
+                return response()->json(['status' => 'ok', 'message' => 'User created', 'user_id' => $u->user_id], 201);
+            });
+
+            Route::patch('{id}', function (\Illuminate\Http\Request $req, $id) {
+                $u = \App\Models\User::findOrFail($id);
+                if ($req->has('realname'))          $u->realname          = $req->input('realname');
+                if ($req->has('email'))             $u->email             = $req->input('email');
+                if ($req->has('descr'))             $u->descr             = $req->input('descr');
+                if ($req->has('enabled'))           $u->enabled           = (bool) $req->input('enabled');
+                if ($req->has('can_modify_passwd')) $u->can_modify_passwd = (bool) $req->input('can_modify_passwd');
+                if ($req->has('password') && $req->input('password')) {
+                    $u->setPassword($req->input('password'));
+                }
+                $u->save();
+                if ($req->has('role')) {
+                    $u->syncRoles([$req->input('role')]);
+                }
+                return response()->json(['status' => 'ok', 'message' => 'User updated']);
+            })->where('id', '[0-9]+');
+
+            Route::delete('{id}', function ($id) {
+                $u = \App\Models\User::findOrFail($id);
+                if ($u->user_id === \Auth::id()) {
+                    return response()->json(['status' => 'error', 'message' => 'Cannot delete yourself'], 403);
+                }
+                $u->delete();
+                return response()->json(['status' => 'ok', 'message' => 'User deleted']);
+            })->where('id', '[0-9]+');
+
+            // API tokens
+            Route::get('{id}/tokens', function ($id) {
+                $u = \App\Models\User::findOrFail($id);
+                $tokens = $u->apiTokens->map(fn ($t) => [
+                    'id'          => $t->id,
+                    'description' => $t->description,
+                    'disabled'    => (bool) $t->disabled,
+                    'token_hash'  => $t->token_hash,
+                ]);
+                return response()->json(['status' => 'ok', 'tokens' => $tokens]);
+            })->where('id', '[0-9]+');
+
+            Route::post('{id}/tokens', function (\Illuminate\Http\Request $req, $id) {
+                $req->validate(['description' => 'required|string|max:100']);
+                $u = \App\Models\User::findOrFail($id);
+                $token = \Illuminate\Support\Str::random(64);
+                $t = $u->apiTokens()->create([
+                    'token_hash'  => $token,
+                    'description' => $req->input('description'),
+                    'disabled'    => 0,
+                ]);
+                return response()->json(['status' => 'ok', 'token' => $token, 'id' => $t->id], 201);
+            })->where('id', '[0-9]+');
+
+            Route::delete('{id}/tokens/{tokenId}', function ($id, $tokenId) {
+                $u = \App\Models\User::findOrFail($id);
+                $u->apiTokens()->where('id', $tokenId)->delete();
+                return response()->json(['status' => 'ok', 'message' => 'Token deleted']);
+            })->where('id', '[0-9]+')->where('tokenId', '[0-9]+');
+        });
+
         Route::prefix('devices')->group(function (): void {
             Route::post('', [App\Api\Controllers\LegacyApiController::class, 'add_device'])->name('add_device');
             Route::delete('{hostname}', [App\Api\Controllers\LegacyApiController::class, 'del_device'])->name('del_device');

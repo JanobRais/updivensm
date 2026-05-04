@@ -28,7 +28,10 @@ const PORT_COLUMNS = 'port_id,device_id,ifIndex,ifName,ifAlias,ifOperStatus,ifAd
 export const getDevices      = () => cached('devices',   () => api.get('/devices').then(r => r.data?.devices ?? []));
 export const getAlerts       = () => cached('alerts',    () => api.get('/alerts').then(r => r.data?.alerts ?? []));
 export const getPollers      = () => cached('pollers',   () => api.get('/pollers').then(r => r.data?.pollers ?? []));
-export const getServices     = () => cached('services',  () => api.get('/services').then(r => r.data?.services ?? []));
+export const getServices       = (params = {}) => api.get('/services', { params }).then(r => r.data);
+export const createService     = (data)        => api.post('/services', data).then(r => r.data);
+export const updateService     = (id, data)    => api.patch(`/services/${id}`, data).then(r => r.data);
+export const deleteService     = (id)          => api.delete(`/services/${id}`).then(r => r.data);
 export const getBgp          = () => cached('bgp',       () => api.get('/bgp').then(r => r.data?.bgp ?? []));
 export const getOspf         = () => cached('ospf',      () => api.get('/ospf').then(r => r.data?.ospf ?? []));
 export const getVrf          = () => cached('vrf',       () => api.get('/routing/vrf').then(r => r.data?.vrfs ?? []));
@@ -41,7 +44,9 @@ export const getPortSecurity = () => cached('portsec',   () => api.get('/port_se
 export const getPorts        = () => cached('ports',     () => api.get('/ports', { params: { columns: PORT_COLUMNS } }).then(r => r.data?.ports ?? []));
 export const getDeviceRelationships = () => cached('relationships', () => api.get('/device_relationships').then(r => r.data?.relationships ?? []));
 export const getLogs         = (limit = 50) => cached(`logs:${limit}`, () => api.get('/logs/eventlog', { params: { limit } }).then(r => r.data?.logs ?? []));
+export const getEventLog     = (params = {}) => api.get('/eventlog', { params }).then(r => r.data);
 export const getSystemInfo   = () => api.get('/system').then(r => r.data || {});
+export const getSystemStats  = () => api.get('/system/stats').then(r => r.data || {});
 export const getArp          = (query = '0.0.0.0') => api.get(`/resources/ip/arp/${query}`).then(r => r.data?.arp ?? []);
 
 // ─── Write operations (admin) ─────────────────────────────────────
@@ -59,6 +64,24 @@ export const getDeviceHealth     = (hostname) =>                                
 export const getDeviceAlerts     = (hostname) => cached(`alts:${hostname}`,      () => api.get('/alerts').then(r => (r.data?.alerts ?? []).filter(a => a.hostname === hostname)));
 export const getInventory        = (hostname) =>                                        api.get(`/inventory/${hostname}/all`).then(r => r.data?.inventory ?? []);
 export const getDeviceLinks      = (hostname) => cached(`links:${hostname}`,       () => api.get(`/devices/${hostname}/links`).then(r => r.data?.links ?? []).catch(() => []));
+
+// ─── Metrics history ─────────────────────────────────────────────
+export const getMetrics        = (params = {}) => api.get('/metrics',         { params }).then(r => r.data);
+export const getMetricObjects  = (params = {}) => api.get('/metrics/objects', { params }).then(r => r.data?.objects ?? []);
+
+// ─── Config ──────────────────────────────────────────────────────
+export const getConfig    = ()                  => api.get('/config').then(r => r.data?.config ?? []);
+export const updateConfig = (config_name, config_value) => api.patch('/config', { config_name, config_value }).then(r => r.data);
+
+// ─── Users ───────────────────────────────────────────────────────
+export const getUsers       = ()           => api.get('/users').then(r => r.data?.users ?? []);
+export const getUser        = (id)         => api.get(`/users/${id}`).then(r => r.data?.user ?? null);
+export const createUser     = (data)       => api.post('/users', data).then(r => r.data);
+export const updateUser     = (id, data)   => api.patch(`/users/${id}`, data).then(r => r.data);
+export const deleteUser     = (id)         => api.delete(`/users/${id}`).then(r => r.data);
+export const getUserTokens  = (id)         => api.get(`/users/${id}/tokens`).then(r => r.data?.tokens ?? []);
+export const createToken    = (id, desc)   => api.post(`/users/${id}/tokens`, { description: desc }).then(r => r.data);
+export const deleteToken    = (id, tid)    => api.delete(`/users/${id}/tokens/${tid}`).then(r => r.data);
 
 export default api;
 
@@ -134,3 +157,10 @@ export const createAlertRuleV2 = (data)        => apiV2.post('/alert-rules',    
 export const updateAlertRuleV2 = (id, data)    => apiV2.put(`/alert-rules/${id}`,   data).then(r => r.data);
 export const deleteAlertRuleV2 = (id)          => apiV2.delete(`/alert-rules/${id}`).then(r => r.data);
 export const toggleAlertRuleV2 = (id)          => apiV2.patch(`/alert-rules/${id}/toggle`).then(r => r.data);
+
+// ─── Alert Transports ─────────────────────────────────────────────
+export const getTransportsV2    = ()            => apiV2.get('/alert-transports').then(r => r.data?.transports ?? []);
+export const getTransportV2     = (id)          => apiV2.get(`/alert-transports/${id}`).then(r => r.data?.transport ?? null);
+export const createTransportV2  = (data)        => apiV2.post('/alert-transports', data).then(r => r.data);
+export const updateTransportV2  = (id, data)    => apiV2.put(`/alert-transports/${id}`, data).then(r => r.data);
+export const deleteTransportV2  = (id)          => apiV2.delete(`/alert-transports/${id}`).then(r => r.data);

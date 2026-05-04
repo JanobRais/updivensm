@@ -496,30 +496,8 @@ export const PortsPage = ({ accent }) => {
 };
 
 // ─── LOGS ─────────────────────────────────────────────────────────
-export const LogsPage = ({ accent }) => {
-  const [logs, setLogs] = useState([]);
-  useEffect(() => { getLogs().then(setLogs).catch(() => {}); }, []);
-  const typeColors = { alert:"#ef4444", syslog:"#6b7280", config:"#3b82f6", auth:"#8b5cf6" };
-  return (
-    <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
-      <PageHeader title="Event Logs" desc="System and device event history." />
-      <div style={{ background:"#fff", borderRadius:10, border:"1px solid #e8ecf0", overflow:"hidden" }}>
-        {logs.slice(0,15).map((e,i) => (
-          <div key={e.event_id||i} style={{ display:"flex", alignItems:"flex-start", gap:12, padding:"11px 18px", borderBottom:"1px solid #f0f2f5", background:i%2===0?"#fff":"#fafafa" }}>
-            <div style={{ width:8, height:8, borderRadius:"50%", flexShrink:0, marginTop:4, background:typeColors[e.type]||"#9ca3af" }} />
-            <div style={{ flex:1, minWidth:0 }}>
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-                <span style={{ fontSize:12, fontWeight:600, color:"#111827" }}>{e.hostname||""}</span>
-                <span style={{ fontSize:10, color:"#9ca3af" }}>{e.datetime||""}</span>
-              </div>
-              <div style={{ fontSize:11, color:"#6b7280", marginTop:2 }}>{e.message||""}</div>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-};
+// LogsPage moved to ./LogsPage.jsx
+export { default as LogsPage } from './LogsPage';
 
 // ─── SERVICES ─────────────────────────────────────────────────────
 export const ServicesPage = ({ accent }) => {
@@ -575,24 +553,8 @@ export const BgpPage = ({ accent }) => {
   );
 };
 
-// ─── SYSTEM ───────────────────────────────────────────────────────
-export const SystemPage = ({ accent }) => {
-  const [sys, setSys] = useState({});
-  useEffect(() => { getSystemInfo().then(setSys).catch(() => {}); }, []);
-  return (
-    <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
-      <PageHeader title="System" desc="Updive NSM instance information." />
-      <div style={{ background:"#fff", borderRadius:10, border:"1px solid #e8ecf0", padding:20 }}>
-        {Object.entries(sys).slice(0,10).map(([k,v]) => (
-          <div key={k} style={{ display:"flex", padding:"8px 0", borderBottom:"1px solid #f9fafb" }}>
-            <div style={{ width:180, fontSize:12, fontWeight:500, color:"#6b7280" }}>{k}</div>
-            <div style={{ fontSize:12, color:"#111827", fontFamily:"monospace" }}>{String(v)}</div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-};
+// SystemPage moved to ./SystemPage.jsx
+export { default as SystemPage } from './SystemPage';
 
 export const PlaceholderPage = ({ title, desc, accent }) => (
   <div style={{ display:"flex", flexDirection:"column", gap:16 }}>

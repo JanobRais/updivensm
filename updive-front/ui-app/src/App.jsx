@@ -1,10 +1,14 @@
 import { useState, useEffect } from 'react';
 import { Sidebar, TopBar } from './components/Layout';
 import DashboardPage from './pages/Dashboard';
-import { DevicesPage, PortsPage, LogsPage, ServicesPage, PollersPage, BgpPage, SystemPage, PlaceholderPage } from './pages/AllPages';
+import { DevicesPage, PortsPage, LogsPage, PollersPage, BgpPage, SystemPage, PlaceholderPage } from './pages/AllPages';
+import ServicesPage from './pages/ServicesPage';
 import AlertsPage from './pages/AlertsPage';
 import AlertRulesPage from './pages/AlertRulesPage';
 import DeviceDetailsPage from './pages/DeviceDetails';
+import UsersPage from './pages/UsersPage';
+import SettingsPage from './pages/SettingsPage';
+import MetricsPage from './pages/MetricsPage';
 
 const ACCENT = "#22c55e";
 
@@ -65,6 +69,9 @@ function App() {
       case 'pollers':       return <PollersPage accent={ACCENT} />;
       case 'bgp':           return <BgpPage accent={ACCENT} />;
       case 'system':        return <SystemPage accent={ACCENT} />;
+      case 'users':         return <UsersPage accent={ACCENT} />;
+      case 'settings':      return <SettingsPage accent={ACCENT} />;
+      case 'metrics':       return <MetricsPage accent={ACCENT} />;
       default:              return <PlaceholderPage title={activePage.charAt(0).toUpperCase() + activePage.slice(1)} desc="This module is under development." accent={ACCENT} />;
     }
   };

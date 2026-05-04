@@ -228,3 +228,8 @@ Schedule::command('device:discover all')
     ->hourly()
     ->withoutOverlapping(55)
     ->runInBackground();
+
+Schedule::command('metrics:collect')
+    ->everyFiveMinutes()
+    ->withoutOverlapping(4)
+    ->runInBackground();
