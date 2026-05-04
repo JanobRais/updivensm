@@ -22,6 +22,9 @@ fi
 su-exec www-data php artisan optimize:clear
 su-exec www-data php artisan migrate --force
 
+# Start crond for periodic polling
+crond -b
+
 # Start Nginx
 nginx
 

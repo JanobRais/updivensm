@@ -57,6 +57,10 @@ RUN chown -R www-data:www-data /opt/updive-nsm \
 # Nginx configuration
 COPY docker/nginx.conf /etc/nginx/http.d/default.conf
 
+# Cron configuration
+COPY docker/updive-nsm.cron /etc/cron.d/updive-nsm
+RUN chmod 0644 /etc/cron.d/updive-nsm
+
 # Entrypoint script
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
