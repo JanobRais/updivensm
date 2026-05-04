@@ -4,7 +4,7 @@ services:
     container_name: updive-nsm-app
     restart: always
     ports:
-      - "8080:80"
+      - "8091:80"        # 8080,8086,8008,8009 band (SIEM) → 8091 ishlatiladi
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
@@ -26,6 +26,8 @@ services:
     image: mariadb:10.11
     container_name: updive-nsm-db
     restart: always
+    ports:
+      - "3307:3306"      # 3306 standart, 5431 SIEM band → 3307 ishlatiladi
     environment:
       - MYSQL_ROOT_PASSWORD=root_pass
       - MYSQL_DATABASE=updive_nsm
@@ -38,6 +40,8 @@ services:
     image: redis:alpine
     container_name: updive-nsm-redis
     restart: always
+    ports:
+      - "6381:6379"      # 6380 SIEM-redis band → 6381 ishlatiladi
 
   # ── SNMP Simulators ────────────────────────────────────────────────
   # Cisco Catalyst 2960-X  |  community: public  |  SNMPv2c
@@ -49,7 +53,7 @@ services:
     volumes:
       - ./snmpsim/data/switch-01/public.snmprec:/usr/local/snmpsim/data/public.snmprec:ro
     ports:
-      - "16101:161/udp"
+      - "16101:161/udp"  # Xavfsiz (SIEM da yo'q)
 
   # Cisco Catalyst 3750-X  |  community: public  |  SNMPv2c
   snmp-switch-02:
