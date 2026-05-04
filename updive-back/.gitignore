@@ -15,7 +15,8 @@ __pycache__
 *.pyc
 *.swp
 Thumbs.db
-config.php
+/config.php
+!app/Models/Config.php
 html/css/custom/*
 html/images/custom/*
 html/images/custommap/*
