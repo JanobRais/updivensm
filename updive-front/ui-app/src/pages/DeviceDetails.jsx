@@ -413,8 +413,8 @@ const DeviceDetailsPage = ({ hostname, onBack, accent }) => {
   const [loading,    setLoading]   = useState(true);
   const [tab,        setTab]       = useState('Overview');
   const [timeRange,  setTimeRange] = useState('-1d');
-  const [selPort,    setSelPort]   = useState(null);
   const [links,      setLinks]     = useState([]);
+  const [showAllPorts, setShowAllPorts] = useState(false);
 
   // Metrics tab state
   const [mPreset,   setMPreset]   = useState('6h');
@@ -498,6 +498,19 @@ const DeviceDetailsPage = ({ hostname, onBack, accent }) => {
     { type: 'port_errors',  label: 'Errors' },
     { type: 'port_packets', label: 'Packets' },
   ];
+  
+  const isPhysicalPort = (p) => {
+    const type = (p.ifType || '').toLowerCase();
+    const name = (p.ifName || '').toLowerCase();
+    // Exclude common virtual/logical types
+    if (type.includes('vlan') || type.includes('loopback') || type.includes('tunnel') || type.includes('softwareloopback') || type.includes('l2vlan')) return false;
+    // Exclude by name patterns
+    if (name.startsWith('vl') || name.startsWith('lo') || name.startsWith('nu') || name.startsWith('tu')) return false;
+    if (name.includes('vlan') || name.includes('loopback') || name.includes('null') || name.includes('tunnel')) return false;
+    return true;
+  };
+
+  const filteredPorts = showAllPorts ? ports : ports.filter(isPhysicalPort);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -542,9 +555,28 @@ const DeviceDetailsPage = ({ hostname, onBack, accent }) => {
 
           {/* Switch Front Panel + Port Detail */}
           {ports.length > 0 && (
-            <Section title={`Switch Panel — ${device.sysName || device.hostname}`}>
+            <Section 
+              title={`Switch Panel — ${device.sysName || device.hostname}`}
+              action={
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <span style={{ fontSize: 11, color: '#6b7280' }}>Barcha interfeyslar:</span>
+                  <button 
+                    onClick={() => setShowAllPorts(!showAllPorts)}
+                    style={{
+                      width: 32, height: 18, borderRadius: 10, border: 'none', position: 'relative',
+                      background: showAllPorts ? accent : '#d1d5db', cursor: 'pointer', transition: 'background 0.2s'
+                    }}
+                  >
+                    <div style={{
+                      width: 14, height: 14, borderRadius: '50%', background: '#fff',
+                      position: 'absolute', top: 2, left: showAllPorts ? 16 : 2, transition: 'left 0.2s'
+                    }} />
+                  </button>
+                </div>
+              }
+            >
               <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 14 }}>
-                <SwitchPanel ports={ports} selectedPort={selPort} onSelect={setSelPort} links={links} />
+                <SwitchPanel ports={filteredPorts} selectedPort={selPort} onSelect={setSelPort} links={links} />
                 <PortDetail port={selPort} accent={accent} link={selPort ? linkByPortId[selPort.port_id] : null} />
               </div>
             </Section>
@@ -585,18 +617,37 @@ const DeviceDetailsPage = ({ hostname, onBack, accent }) => {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           {/* Mini panel in Interfaces tab too */}
           {ports.length > 0 && (
-            <Section title="Port Panel — click a port to highlight">
+            <Section 
+              title="Port Panel — click a port to highlight"
+              action={
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <span style={{ fontSize: 10, color: '#6b7280' }}>Show All:</span>
+                  <button 
+                    onClick={() => setShowAllPorts(!showAllPorts)}
+                    style={{
+                      width: 28, height: 16, borderRadius: 10, border: 'none', position: 'relative',
+                      background: showAllPorts ? accent : '#d1d5db', cursor: 'pointer'
+                    }}
+                  >
+                    <div style={{
+                      width: 12, height: 12, borderRadius: '50%', background: '#fff',
+                      position: 'absolute', top: 2, left: showAllPorts ? 14 : 2, transition: 'left 0.2s'
+                    }} />
+                  </button>
+                </div>
+              }
+            >
               <div style={{ padding: 14 }}>
-                <SwitchPanel ports={ports} selectedPort={selPort} onSelect={setSelPort} links={links} />
+                <SwitchPanel ports={filteredPorts} selectedPort={selPort} onSelect={setSelPort} links={links} />
               </div>
             </Section>
           )}
 
-          <Section title={`Interfaces (${ports.length})`}>
+          <Section title={`Interfaces (${filteredPorts.length})`}>
             <div style={{ overflowX: 'auto' }}>
               <TableCard
                 headers={['#', 'Interface', 'Alias', 'Speed', 'Status', 'In Rate', 'Out Rate']}
-                rows={ports}
+                rows={filteredPorts}
                 renderRow={(p, i) => {
                   const isUp  = p.ifOperStatus === 'up' || p.ifOperStatus === 1;
                   const isSel = selPort?.port_id === p.port_id;
