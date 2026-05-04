@@ -1,4 +1,13 @@
 services:
+  frontend:
+    build: ../updive-front/ui-app
+    container_name: updive-nsm-frontend
+    restart: always
+    ports:
+      - "5175:5175"      # 5173,5174 band bo'lishi mumkin → 5175 xavfsiz
+    depends_on:
+      - app
+
   app:
     build: .
     container_name: updive-nsm-app
