@@ -413,6 +413,7 @@ const DeviceDetailsPage = ({ hostname, onBack, accent }) => {
   const [loading,    setLoading]   = useState(true);
   const [tab,        setTab]       = useState('Overview');
   const [timeRange,  setTimeRange] = useState('-1d');
+  const [selPort,    setSelPort]   = useState(null);
   const [links,      setLinks]     = useState([]);
   const [showAllPorts, setShowAllPorts] = useState(false);
 
