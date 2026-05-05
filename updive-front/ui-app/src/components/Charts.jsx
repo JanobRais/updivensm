@@ -247,11 +247,20 @@ export const TableCard = ({ headers, rows, renderRow }) => (
   </div>
 );
 
-export const PageHeader = ({ title, desc, action }) => (
+export const PageHeader = ({ title, desc, action, icon }) => (
   <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
-    <div>
-      <h1 style={{ fontSize:18, fontWeight:700, color:"#111827", marginBottom:2 }}>{title}</h1>
-      {desc && <p style={{ fontSize:12, color:"#6b7280" }}>{desc}</p>}
+    <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
+      {icon && (
+        <img 
+          src={icon.includes('/') ? `/${icon}` : `/images/os/${icon}`} 
+          alt="" 
+          style={{ width: 28, height: 28, objectFit: 'contain' }} 
+        />
+      )}
+      <div>
+        <h1 style={{ fontSize:18, fontWeight:700, color:"#111827", marginBottom:2 }}>{title}</h1>
+        {desc && <p style={{ fontSize:12, color:"#6b7280" }}>{desc}</p>}
+      </div>
     </div>
     {action}
   </div>

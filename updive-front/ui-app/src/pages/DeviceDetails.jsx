@@ -47,7 +47,7 @@ const TIME_RANGES = [
   { label: '30d', value: '-1M' },
 ];
 
-const TABS = ['Overview', 'Interfaces', 'CPU', 'Memory', 'Alerts', 'Eventlog', 'Metrics', 'Graphs'];
+const ALL_TABS = ['Overview', 'Interfaces', 'CPU', 'Memory', 'Alerts', 'Eventlog', 'Metrics', 'Graphs'];
 
 const Section = ({ title, children, action }) => (
   <div style={{ background: '#fff', borderRadius: 10, border: '1px solid #e8ecf0', overflow: 'hidden' }}>
@@ -482,6 +482,13 @@ const DeviceDetailsPage = ({ hostname, onBack, accent }) => {
   const activeAlerts = alerts.filter(a => a.state === 1);
   const devId       = device.device_id;
 
+  // Device Type Detection
+  const os = (device.os || '').toLowerCase();
+  const purpose = (device.purpose || '').toLowerCase();
+  const isCamera = os.includes('hikvision') || os.includes('dahua') || purpose === 'camera';
+  const isSwitch = os.includes('eltex') || os.includes('cisco') || os.includes('procurve') || os.includes('ios') || ports.length > 2;
+  const isRouter = os.includes('junos') || os.includes('ios-xr') || os.includes('mikrotik');
+
   const gUrl = (type, id, extra = '') => {
     const param = type.startsWith('device_') ? `device=${id}` : `id=${id}`;
     return `/graph.php?type=${type}&${param}&from=${timeRange}&to=now&width=600&height=200&legend=yes${extra}`;
@@ -518,8 +525,9 @@ const DeviceDetailsPage = ({ hostname, onBack, accent }) => {
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
 
       <PageHeader
-        title={device.sysName || device.hostname}
+        title={device.display || device.sysName || device.hostname}
         desc={`${device.hardware || device.os || ''} · ${device.ip}`}
+        icon={device.icon}
         action={
           <button onClick={onBack} style={{ background: '#f3f4f6', border: '1px solid #e5e7eb', borderRadius: 8, padding: '7px 14px', fontSize: 12, fontWeight: 600, cursor: 'pointer', color: '#374151', fontFamily: 'inherit' }}>
             ← Back
@@ -531,16 +539,21 @@ const DeviceDetailsPage = ({ hostname, onBack, accent }) => {
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
         <StatCard label="Status"        value={device.status ? 'UP' : 'DOWN'} icon="checkCircle" color={device.status ? '#22c55e' : '#ef4444'} />
         <StatCard label="Uptime"        value={fmt.uptime(device.uptime)}      icon="clock"       color="#f59e0b" />
-        <StatCard label="CPU Avg"       value={avgCpu + '%'}                   icon="activity"    color="#8b5cf6" subtext={`${processors.length} cores`} />
-        <StatCard label="RAM"           value={ram ? ram.mempool_perc + '%' : 'N/A'} icon="database" color="#3b82f6"
-          subtext={ram ? `${fmt.bytes(ram.mempool_used)} / ${fmt.bytes(ram.mempool_total)}` : ''} />
-        <StatCard label="Ports Up"      value={`${portsUp}/${ports.length}`}   icon="wifi"        color={accent} />
+        {processors.length > 0 && <StatCard label="CPU Avg"       value={avgCpu + '%'}                   icon="activity"    color="#8b5cf6" subtext={`${processors.length} cores`} />}
+        {ram && <StatCard label="RAM"           value={ram.mempool_perc + '%'} icon="database" color="#3b82f6"
+          subtext={`${fmt.bytes(ram.mempool_used)} / ${fmt.bytes(ram.mempool_total)}`} />}
+        {ports.length > 0 && <StatCard label="Ports Up"      value={`${portsUp}/${ports.length}`}   icon="wifi"        color={accent} />}
         <StatCard label="Active Alerts" value={activeAlerts.length}            icon="alerts"      color={activeAlerts.length > 0 ? '#ef4444' : '#22c55e'} />
       </div>
 
       {/* Tab nav */}
       <div style={{ display: 'flex', gap: 4, background: '#fff', borderRadius: 10, border: '1px solid #e8ecf0', padding: '8px 12px', flexWrap: 'wrap' }}>
-        {TABS.map(t => (
+        {ALL_TABS.filter(t => {
+          if (t === 'Interfaces' && ports.length === 0) return false;
+          if (t === 'CPU' && processors.length === 0) return false;
+          if (t === 'Memory' && mempools.length === 0) return false;
+          return true;
+        }).map(t => (
           <button key={t} onClick={() => setTab(t)} style={{
             padding: '5px 14px', borderRadius: 20, border: 'none', fontSize: 12, fontWeight: 500,
             cursor: 'pointer', fontFamily: 'inherit',
@@ -554,8 +567,8 @@ const DeviceDetailsPage = ({ hostname, onBack, accent }) => {
       {tab === 'Overview' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
 
-          {/* Switch Front Panel + Port Detail */}
-          {ports.length > 0 && (
+          {/* Switch Front Panel (Only for switches/routers with ports) */}
+          {ports.length > 2 && isSwitch && (
             <Section 
               title={`Switch Panel — ${device.sysName || device.hostname}`}
               action={
@@ -579,6 +592,19 @@ const DeviceDetailsPage = ({ hostname, onBack, accent }) => {
               <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 14 }}>
                 <SwitchPanel ports={filteredPorts} selectedPort={selPort} onSelect={setSelPort} links={links} />
                 <PortDetail port={selPort} accent={accent} link={selPort ? linkByPortId[selPort.port_id] : null} />
+              </div>
+            </Section>
+          )}
+
+          {/* Camera / NVR Specific Section */}
+          {isCamera && (
+            <Section title="Camera Details & Hardware">
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 0 }}>
+                <KV label="Serial Number" value={device.serial || 'N/A'} mono color="#059669" />
+                <KV label="Hardware Model" value={device.hardware} />
+                <KV label="Software Version" value={device.version} />
+                <KV label="Device Type" value="Network Camera / NVR" />
+                {device.sysName && <KV label="System Name" value={device.sysName} />}
               </div>
             </Section>
           )}
@@ -808,27 +834,35 @@ const DeviceDetailsPage = ({ hostname, onBack, accent }) => {
             </button>
           </div>
 
-          {/* 2×2 chart grid */}
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14 }}>
-            {M_DEFS.map(mt => {
-              const rows = mData[mt.type] ?? [];
-              const last = rows.length > 0 ? rows[rows.length-1]?.value : null;
-              return (
-                <div key={mt.type} style={{ background:'#fff', borderRadius:10, border:'1px solid #e8ecf0', padding:'12px 14px' }}>
-                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8 }}>
-                    <span style={{ fontSize:12, fontWeight:700, color:'#111827' }}>{mt.label}</span>
-                    <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-                      {last !== null && (
-                        <span style={{ fontSize:12, fontWeight:700, color: mt.color }}>{mFmt(last, mt.unit)}</span>
-                      )}
-                      <span style={{ fontSize:10, color:'#9ca3af' }}>{rows.length} pts</span>
+          {/* 2×2 chart grid or empty state */}
+          {Object.keys(mData).length === 0 || M_DEFS.every(mt => (mData[mt.type] ?? []).length === 0) ? (
+            <div style={{ background:'#fff', borderRadius:10, border:'1px dashed #e8ecf0', padding:40, textAlign:'center' }}>
+              <div style={{ fontSize:14, fontWeight:600, color:'#374151', marginBottom:8 }}>Ma'lumot topilmadi</div>
+              <div style={{ fontSize:12, color:'#9ca3af' }}>Ushbu qurilma (ayniqsa kameralar) standart CPU, Memory va Port metrikalarini doimiy uzatmasligi mumkin.</div>
+            </div>
+          ) : (
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14 }}>
+              {M_DEFS.map(mt => {
+                const rows = mData[mt.type] ?? [];
+                if (rows.length === 0) return null; // Hide empty charts
+                const last = rows.length > 0 ? rows[rows.length-1]?.value : null;
+                return (
+                  <div key={mt.type} style={{ background:'#fff', borderRadius:10, border:'1px solid #e8ecf0', padding:'12px 14px' }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8 }}>
+                      <span style={{ fontSize:12, fontWeight:700, color:'#111827' }}>{mt.label}</span>
+                      <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                        {last !== null && (
+                          <span style={{ fontSize:12, fontWeight:700, color: mt.color }}>{mFmt(last, mt.unit)}</span>
+                        )}
+                        <span style={{ fontSize:10, color:'#9ca3af' }}>{rows.length} pts</span>
+                      </div>
                     </div>
+                    <MiniChart uid={`${mt.type}-${devId}`} data={rows} unit={mt.unit} color={mt.color} />
                   </div>
-                  <MiniChart uid={`${mt.type}-${devId}`} data={rows} unit={mt.unit} color={mt.color} />
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          )}
 
           {/* Stats summary row */}
           {Object.keys(mData).length > 0 && (

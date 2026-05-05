@@ -239,7 +239,7 @@ const Topology = ({ devices, relationships }) => {
       const isUp = d ? (d.status === 1 || d.status === true) : true;
       return {
         id: h,
-        label: (d ? (d.sysName || h) : h).replace(/^sw-/i, 'SW-'),
+        label: (d ? (d.display || d.sysName || h) : h).replace(/^sw-/i, 'SW-'),
         x, y, r,
         bg: isUp ? '#22c55e' : '#ef4444',
         fg: '#fff', fs,
@@ -327,7 +327,7 @@ const Heatmap = ({ devices, ports }) => {
         const rate = dp.reduce((s, p) => s + (p.ifInOctets_rate || 0) + (p.ifOutOctets_rate || 0), 0);
         const curUtil = cap > 0 ? Math.min(1, (rate * 8) / cap) : 0;
         return {
-          name: (d.sysName || d.hostname).replace(/^sw-/, 'SW-'),
+          name: (d.display || d.sysName || d.hostname).replace(/^sw-/, 'SW-'),
           cells: slots.map(h => {
             const hMult = DAY_PATTERN[h] ?? 0.5;
             const scaled = curMult > 0 ? curUtil * (hMult / curMult) : hMult * 0.5;
@@ -461,17 +461,17 @@ const DashboardPage = ({ accent = '#22c55e' }) => {
     const cap  = dp.filter(p => p.ifOperStatus === 'up').reduce((s, p) => s + (p.ifSpeed || 1e9), 0);
     const rate = dp.reduce((s, p) => s + (p.ifInOctets_rate || 0) + (p.ifOutOctets_rate || 0), 0);
     const pct  = cap > 0 ? Math.min(100, Math.round((rate * 8 / cap) * 100)) : 0;
-    return { name: d.sysName || d.hostname, pct };
+    return { name: d.display || d.sysName || d.hostname, pct };
   });
 
   // Sites: built from real devices, city extracted from sysName pattern
   const CITY_MAP = { tas: 'Toshkent', sam: 'Samarqand', nam: 'Namangan', far: "Farg'ona", ber: 'Beruniy' };
   const sites = (devices || []).map(d => {
-    const m = (d.sysName || d.hostname).match(/[^a-z]?(tas|sam|nam|far|ber)[^a-z]?/i);
+    const m = (d.display || d.sysName || d.hostname).match(/[^a-z]?(tas|sam|nam|far|ber)[^a-z]?/i);
     const city  = m ? (CITY_MAP[m[1].toLowerCase()] || m[1].toUpperCase()) : d.hostname;
     const isUp  = d.status === 1 || d.status === true;
     const upPct = isUp ? 100.0 : 0.0;
-    return { name: (d.sysName || d.hostname).toUpperCase(), city, devs: 1, pct: upPct, color: isUp ? '#22c55e' : '#ef4444' };
+    return { name: (d.display || d.sysName || d.hostname).toUpperCase(), city, devs: 1, pct: upPct, color: isUp ? '#22c55e' : '#ef4444' };
   });
 
   // Network Uptime: average device uptime vs 30 days

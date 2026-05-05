@@ -256,7 +256,7 @@ const EditDeviceModal = ({ device, accent, onClose, onSaved }) => {
         <div style={{ padding: '16px 20px', borderBottom: '1px solid #f0f2f5', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexShrink: 0 }}>
           <div>
             <div style={{ fontSize: 15, fontWeight: 700, color: '#111827' }}>Edit Device</div>
-            <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>{device.sysName || device.hostname}</div>
+            <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>{device.display || device.sysName || device.hostname}</div>
           </div>
           <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#9ca3af', padding: 4 }}>
             <Icon name="close" size={18} />
@@ -287,7 +287,7 @@ const EditDeviceModal = ({ device, accent, onClose, onSaved }) => {
           <div style={{ ...F.row2 }}>
             <div style={F.group}>
               <label style={F.label}>Display Name <span style={{ color: '#9ca3af', fontWeight: 400 }}>(UI override)</span></label>
-              <input style={F.input} value={form.display} onChange={e => set('display', e.target.value)} placeholder={device.sysName || device.hostname} />
+              <input style={F.input} value={form.display} onChange={e => set('display', e.target.value)} placeholder={device.display || device.sysName || device.hostname} />
             </div>
             <div style={F.group}>
               <label style={F.label}>Override IP <span style={{ color: '#9ca3af', fontWeight: 400 }}>(current: {device.ip})</span></label>
@@ -415,10 +415,13 @@ export const DevicesPage = ({ accent, onSelectDevice }) => {
                 <tr key={d.device_id || i} style={{ borderTop: '1px solid #f0f2f5', background: i % 2 === 0 ? '#fff' : '#fafafa' }}>
                   <td style={{ padding: '10px 14px', fontSize: 12, fontWeight: 600, color: accent, cursor: 'pointer' }} onClick={() => onSelectDevice(d.hostname)}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-                      <div style={{ width: 6, height: 6, borderRadius: '50%', background: d.status === 1 ? '#22c55e' : '#ef4444' }} />
+                      <div style={{ width: 6, height: 6, borderRadius: '50%', background: d.status === 1 ? '#22c55e' : '#ef4444', flexShrink: 0 }} />
+                      {d.icon && (
+                        <img src={d.icon.includes('/') ? `/${d.icon}` : `/images/os/${d.icon}`} alt="" style={{ width: 20, height: 20, objectFit: 'contain' }} />
+                      )}
                       <div>
-                        <div>{d.sysName || d.hostname}</div>
-                        {d.sysName && d.sysName !== d.hostname && (
+                        <div>{d.display || d.sysName || d.hostname}</div>
+                        {((d.display || d.sysName) && (d.display || d.sysName) !== d.hostname) && (
                           <div style={{ fontSize: 10, color: '#9ca3af', fontWeight: 400 }}>{d.hostname}</div>
                         )}
                       </div>

@@ -7,3 +7,4 @@
 01   *    * * *   www-data    /opt/updive-nsm/billing-calculate.php >> /dev/null 2>&1
 */5  *    * * *   www-data    /opt/updive-nsm/check-services.php >> /dev/null 2>&1
 19   0    * * *   www-data    /opt/updive-nsm/daily.sh >> /dev/null 2>&1
+*/5  *    * * *   www-data    cd /opt/updive-nsm && php artisan metrics:collect >> /dev/null 2>&1

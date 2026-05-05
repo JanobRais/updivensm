@@ -9,6 +9,10 @@ import DeviceDetailsPage from './pages/DeviceDetails';
 import UsersPage from './pages/UsersPage';
 import SettingsPage from './pages/SettingsPage';
 import MetricsPage from './pages/MetricsPage';
+import {
+  OspfPage, VrfPage, VlansPage, DeviceGroupsPage, PortGroupsPage,
+  LocationsPage, BillsPage, PortSecurityPage, ArpPage,
+} from './pages/NetworkPages';
 
 const ACCENT = "#22c55e";
 
@@ -71,8 +75,17 @@ function App() {
       case 'system':        return <SystemPage accent={ACCENT} />;
       case 'users':         return <UsersPage accent={ACCENT} />;
       case 'settings':      return <SettingsPage accent={ACCENT} />;
-      case 'metrics':       return <MetricsPage accent={ACCENT} />;
-      default:              return <PlaceholderPage title={activePage.charAt(0).toUpperCase() + activePage.slice(1)} desc="This module is under development." accent={ACCENT} />;
+      case 'metrics':        return <MetricsPage accent={ACCENT} />;
+      case 'ospf':           return <OspfPage />;
+      case 'vrf':            return <VrfPage />;
+      case 'vlans':          return <VlansPage />;
+      case 'device_groups':  return <DeviceGroupsPage />;
+      case 'port_groups':    return <PortGroupsPage />;
+      case 'locations':      return <LocationsPage />;
+      case 'bills':          return <BillsPage />;
+      case 'port_security':  return <PortSecurityPage />;
+      case 'arp':            return <ArpPage />;
+      default:               return <PlaceholderPage title={activePage.charAt(0).toUpperCase() + activePage.slice(1)} desc="This module is under development." accent={ACCENT} />;
     }
   };
 

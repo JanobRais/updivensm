@@ -21,6 +21,10 @@ export default defineConfig({
       '/graph.php': {
         target: 'http://updive-nsm-app:80',
         changeOrigin: true,
+      },
+      '/images': {
+        target: 'http://updive-nsm-app:80',
+        changeOrigin: true,
       }
     }
   }

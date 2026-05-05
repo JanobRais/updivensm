@@ -29,18 +29,22 @@ use App\Facades\PortCache;
 use App\Models\EntPhysical;
 use App\Models\Ipv6Address;
 use App\Models\Transceiver;
+use App\Models\Mempool;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Log;
+use UpdiveNSM\Device\Processor;
 use UpdiveNSM\Exceptions\InvalidIpException;
 use UpdiveNSM\Interfaces\Discovery\Ipv6AddressDiscovery;
 use UpdiveNSM\Interfaces\Discovery\TransceiverDiscovery;
+use UpdiveNSM\Interfaces\Discovery\ProcessorDiscovery;
+use UpdiveNSM\Interfaces\Discovery\MempoolsDiscovery;
 use UpdiveNSM\OS\Shared\Radlan;
 use UpdiveNSM\OS\Traits\EntityMib;
 use UpdiveNSM\Util\IPv6;
 use UpdiveNSM\Util\StringHelpers;
 use SnmpQuery;
 
-class EltexMes23xx extends Radlan implements TransceiverDiscovery, Ipv6AddressDiscovery
+class EltexMes23xx extends Radlan implements TransceiverDiscovery, Ipv6AddressDiscovery, ProcessorDiscovery, MempoolsDiscovery
 {
     use EntityMib {
         EntityMib::discoverEntityPhysical as discoverBaseEntityPhysical;
@@ -48,63 +52,71 @@ class EltexMes23xx extends Radlan implements TransceiverDiscovery, Ipv6AddressDi
 
     public function discoverEntityPhysical(): Collection
     {
-        $inventory = $this->discoverBaseEntityPhysical();
+        return $this->discoverBaseEntityPhysical()->each(function (EntPhysical $entity) {
+            if ($entity->entPhysicalClass == 'sensor') {
+                if (str_contains($entity->entPhysicalDescr, 'Temperature')) {
+                    $entity->sensor_type = 'temperature';
+                }
+            }
+        });
+    }
 
-        // add in transceivers
-        $trans = SnmpQuery::hideMib()->enumStrings()->cache()->walk('ELTEX-MES-PHYSICAL-DESCRIPTION-MIB::eltPhdTransceiverInfoTable')->table(1);
-        $ifIndexToEntIndexMap = array_flip($this->getIfIndexEntPhysicalMap());
+    public function discoverProcessors(): array
+    {
+        $usage = snmp_get($this->getDeviceArray(), '.1.3.6.1.4.1.89.1.7.0', '-Osnqv');
+        if (is_numeric($usage)) {
+            return [
+                Processor::discover(
+                    'eltex',
+                    $this->getDeviceId(),
+                    '.1.3.6.1.4.1.89.1.7.0',
+                    0,
+                    'CPU',
+                    1,
+                    $usage
+                ),
+            ];
+        }
+        return [];
+    }
 
-        foreach ($trans as $ifIndex => $data) {
-            $inventory->push(new EntPhysical([
-                'entPhysicalIndex' => 1000000 + $ifIndex,
-                'entPhysicalDescr' => $data['eltPhdTransceiverInfoType'],
-                'entPhysicalClass' => 'sfp-cage',
-                'entPhysicalName' => strtoupper((string) $data['eltPhdTransceiverInfoConnectorType']),
-                'entPhysicalModelName' => $this->normData($data['eltPhdTransceiverInfoPartNumber']),
-                'entPhysicalSerialNum' => $data['eltPhdTransceiverInfoSerialNumber'],
-                'entPhysicalContainedIn' => $ifIndexToEntIndexMap[$ifIndex] ?? 0,
-                'entPhysicalMfgName' => $data['eltPhdTransceiverInfoVendorName'],
-                'entPhysicalHardwareRev' => $this->normData($data['eltPhdTransceiverInfoVendorRev']),
-                'entPhysicalParentRelPos' => 0,
-                'entPhysicalIsFRU' => 'true',
-                'ifIndex' => $ifIndex,
-            ]));
+    public function discoverMempools(): Collection
+    {
+        $oid = '.1.3.6.1.4.1.89.1.9.0';
+        $memory = snmp_get($this->getDeviceArray(), $oid, '-OQv');
+
+        if (!is_numeric($memory)) {
+            return new Collection();
         }
 
-        return $inventory;
+        return collect([(new Mempool([
+            'device_id' => $this->getDeviceId(),
+            'mempool_index' => 0,
+            'mempool_type' => 'eltex',
+            'mempool_class' => 'system',
+            'mempool_descr' => 'Memory',
+            'mempool_perc_oid' => $oid,
+        ]))->fillUsage(null, null, null, $memory)]);
     }
 
     public function discoverTransceivers(): Collection
     {
-        return SnmpQuery::hideMib()->enumStrings()->cache()->walk('ELTEX-MES-PHYSICAL-DESCRIPTION-MIB::eltPhdTransceiverInfoTable')
-            ->mapTable(fn ($data, $ifIndex) => new Transceiver([
-                'port_id' => PortCache::getIdFromIfIndex($ifIndex, $this->getDevice()),
-                'index' => $ifIndex,
-                'connector' => $data['eltPhdTransceiverInfoConnectorType'] ? strtoupper((string) $data['eltPhdTransceiverInfoConnectorType']) : null,
-                'distance' => $data['eltPhdTransceiverInfoTransferDistance'] ?? null,
-                'model' => $data['eltPhdTransceiverInfoPartNumber'] ?? null,
-                'revision' => $data['eltPhdTransceiverInfoVendorRev'] ?? null,
-                'serial' => $data['eltPhdTransceiverInfoSerialNumber'] ?? null,
-                'vendor' => $data['eltPhdTransceiverInfoVendorName'] ?? null,
-                'wavelength' => $data['eltPhdTransceiverInfoWaveLength'] ?? null,
-                'entity_physical_index' => $ifIndex,
+        return SnmpQuery::walk('.1.3.6.1.4.1.35265.1.23.1.1.31.1.1.1.1.1')
+            ->mapTable(fn ($data) => new Transceiver([
+                'port_id' => PortCache::getIdFromIfIndex($data['ifIndex'], $this->getDevice()),
+                'connector' => $data['eltexPhyTransceiverInfoConnectorType'] ? strtoupper((string) $data['eltexPhyTransceiverInfoConnectorType']) : null,
+                'distance' => $data['eltexPhyTransceiverInfoTransferDistance'] ?? null,
+                'model' => $data['eltexPhyTransceiverInfoPartNumber'] ?? null,
+                'revision' => $data['eltexPhyTransceiverInfoVendorRevision'] ?? null,
+                'serial' => $data['eltexPhyTransceiverInfoSerialNumber'] ?? null,
+                'vendor' => $data['eltexPhyTransceiverInfoVendorName'] ?? null,
+                'wavelength' => $data['eltexPhyTransceiverInfoWaveLength'] ?? null,
             ]));
-    }
-
-    /**
-     * Specific HexToString for Eltex
-     */
-    protected function normData(string $par = ''): string
-    {
-        return StringHelpers::isHex($par, ' ') ? StringHelpers::hexToAscii($par, ' ') : $par;
     }
 
     public function discoverIpv6Addresses(): Collection
     {
-        $ips = new Collection;
-
-        $ips = $ips->merge(SnmpQuery::enumStrings()->walk([
-            'IP-MIB::ipAddressIfIndex.ipv6',
+        $ips = SnmpQuery::walk([
             'RADLAN-IPv6::rlIpAddressTable',
         ])->mapTable(function ($data, $addrType, $address = '') {
             if ($addrType == 'ipv6') {
@@ -124,7 +136,8 @@ class EltexMes23xx extends Radlan implements TransceiverDiscovery, Ipv6AddressDi
                     return null;
                 }
             }
-        }));
+            return null;
+        });
 
         return $ips->filter();
     }

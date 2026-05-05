@@ -43,10 +43,18 @@ class ModuleList
     }
 
     /**
-     * @param  array<string>  $overrides
+     * @param  array<string>|string|null  $overrides
      */
-    public static function fromUserOverrides(array $overrides): self
+    public static function fromUserOverrides($overrides): self
     {
+        if (is_string($overrides)) {
+            $overrides = explode(',', $overrides);
+        }
+
+        if (! is_array($overrides)) {
+            $overrides = [];
+        }
+
         $modules = [];
         $flattened = array_merge(...array_map(fn ($item) => explode(',', $item), $overrides));
 
