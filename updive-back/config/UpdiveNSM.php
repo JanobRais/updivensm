@@ -19,7 +19,7 @@
      | and grant access to things needed. Defaults to UpdiveNSM.
      */
 
-     'user' => env('UpdiveNSM_USER', 'UpdiveNSM'),
+     'user' => env('UpdiveNSM_USER', 'www-data'),
 
      /*
      |--------------------------------------------------------------------------

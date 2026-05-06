@@ -1,10 +1,20 @@
 #!/bin/bash
 
-# Wait for database
-until mariadb-admin ping -h "$DB_HOST" -u root -p"$MYSQL_ROOT_PASSWORD" --skip-ssl --silent; do
-    echo "Waiting for database connection..."
-    sleep 2
-done
+# Wait for database (PHP-based to avoid Alpine segmentation fault)
+echo "Waiting for database connection..."
+php -r '
+$max = 30;
+while ($max--) {
+    try {
+        new PDO("mysql:host=".getenv("DB_HOST").";dbname=".getenv("DB_DATABASE"), getenv("DB_USERNAME"), getenv("DB_PASSWORD"));
+        exit(0);
+    } catch (Exception $e) {
+        sleep(2);
+    }
+}
+exit(1);
+'
+echo "Database is ready."
 
 # Ensure permissions
 chown -R www-data:www-data /opt/updive-nsm/storage /opt/updive-nsm/bootstrap/cache /opt/updive-nsm/logs /opt/updive-nsm/rrd
