@@ -5,6 +5,8 @@ services:
     restart: always
     ports:
       - "5175:5175"      # 5173,5174 band bo'lishi mumkin → 5175 xavfsiz
+    environment:
+      - TZ=Asia/Tashkent
     depends_on:
       - app
 
@@ -23,6 +25,7 @@ services:
       - DB_PASSWORD=updive_pass
       - MYSQL_ROOT_PASSWORD=root_pass
       - REDIS_HOST=redis
+      - TZ=Asia/Tashkent
       - UpdiveNSM_USER=www-data
       - UpdiveNSM_GROUP=www-data
     volumes:
@@ -40,6 +43,7 @@ services:
     environment:
       - MYSQL_ROOT_PASSWORD=root_pass
       - MYSQL_DATABASE=updive_nsm
+      - TZ=Asia/Tashkent
       - MYSQL_USER=updive
       - MYSQL_PASSWORD=updive_pass
     volumes:
@@ -51,6 +55,8 @@ services:
     restart: always
     ports:
       - "6381:6379"      # 6380 SIEM-redis band → 6381 ishlatiladi
+    environment:
+      - TZ=Asia/Tashkent
 
   # ── SNMP Simulators ────────────────────────────────────────────────
   # Cisco Catalyst 2960-X  |  community: public  |  SNMPv2c
@@ -61,6 +67,8 @@ services:
     restart: always
     volumes:
       - ./snmpsim/data/switch-01/public.snmprec:/usr/local/snmpsim/data/public.snmprec:ro
+    environment:
+      - TZ=Asia/Tashkent
     ports:
       - "16101:161/udp"  # Xavfsiz (SIEM da yo'q)
 
@@ -72,6 +80,8 @@ services:
     restart: always
     volumes:
       - ./snmpsim/data/switch-02/public.snmprec:/usr/local/snmpsim/data/public.snmprec:ro
+    environment:
+      - TZ=Asia/Tashkent
     ports:
       - "16102:161/udp"
 
@@ -83,6 +93,8 @@ services:
     restart: always
     volumes:
       - ./snmpsim/data/switch-03/public.snmprec:/usr/local/snmpsim/data/public.snmprec:ro
+    environment:
+      - TZ=Asia/Tashkent
     ports:
       - "16103:161/udp"
 
@@ -94,6 +106,8 @@ services:
     restart: always
     volumes:
       - ./snmpsim/data/switch-04/public.snmprec:/usr/local/snmpsim/data/public.snmprec:ro
+    environment:
+      - TZ=Asia/Tashkent
     ports:
       - "16104:161/udp"
 
@@ -105,6 +119,8 @@ services:
     restart: always
     volumes:
       - ./snmpsim/data/switch-05/public.snmprec:/usr/local/snmpsim/data/public.snmprec:ro
+    environment:
+      - TZ=Asia/Tashkent
     ports:
       - "16105:161/udp"
 

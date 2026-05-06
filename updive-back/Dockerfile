@@ -25,7 +25,11 @@ RUN apk add --no-cache \
     sqlite-dev \
     shadow \
     su-exec \
-    util-linux
+    util-linux \
+    tzdata && \
+    cp /usr/share/zoneinfo/Asia/Tashkent /etc/localtime && \
+    echo "Asia/Tashkent" > /etc/timezone && \
+    apk del tzdata
 
 # Install PHP extensions
 RUN docker-php-ext-configure gd --with-freetype --with-jpeg \
