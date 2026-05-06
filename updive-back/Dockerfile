@@ -29,7 +29,7 @@ RUN apk add --no-cache \
     tzdata && \
     cp /usr/share/zoneinfo/Asia/Tashkent /etc/localtime && \
     echo "Asia/Tashkent" > /etc/timezone && \
-    apk del tzdata
+    echo "date.timezone=Asia/Tashkent" > /usr/local/etc/php/conf.d/timezone.ini
 
 # Install PHP extensions
 RUN docker-php-ext-configure gd --with-freetype --with-jpeg \
