@@ -1,10 +1,10 @@
-# /etc/cron.d/updive-nsm
-33   */6  * * *   www-data    /opt/updive-nsm/discovery-wrapper.py 1
-*/5  *    * * *   www-data    /opt/updive-nsm/lnms device:discover new >> /dev/null 2>&1
-*/5  *    * * *   www-data    /opt/updive-nsm/poller-wrapper.py 16
-*    *    * * *   www-data    /opt/updive-nsm/alerts.php >> /dev/null 2>&1
-*/5  *    * * *   www-data    /opt/updive-nsm/poll-billing.php >> /dev/null 2>&1
-01   *    * * *   www-data    /opt/updive-nsm/billing-calculate.php >> /dev/null 2>&1
-*/5  *    * * *   www-data    /opt/updive-nsm/check-services.php >> /dev/null 2>&1
-19   0    * * *   www-data    /opt/updive-nsm/daily.sh >> /dev/null 2>&1
-*/5  *    * * *   www-data    cd /opt/updive-nsm && php artisan metrics:collect >> /dev/null 2>&1
+# Updive NSM Crontab (user-specific)
+33   */6  * * *   /opt/updive-nsm/discovery-wrapper.py 1
+*/5  *    * * *   /opt/updive-nsm/lnms device:discover new >> /dev/null 2>&1
+*/5  *    * * *   /opt/updive-nsm/poller-wrapper.py 16
+*    *    * * *   /opt/updive-nsm/alerts.php >> /dev/null 2>&1
+*/5  *    * * *   /opt/updive-nsm/poll-billing.php >> /dev/null 2>&1
+01   *    * * *   /opt/updive-nsm/billing-calculate.php >> /dev/null 2>&1
+*/5  *    * * *   /opt/updive-nsm/check-services.php >> /dev/null 2>&1
+19   0    * * *   /opt/updive-nsm/daily.sh >> /dev/null 2>&1
+*/5  *    * * *   cd /opt/updive-nsm && php artisan metrics:collect >> /dev/null 2>&1
