@@ -59,9 +59,6 @@ RUN composer install --no-dev --optimize-autoloader --no-scripts --no-interactio
 # Copy the rest of the application
 COPY . .
 
-# Re-run autoloader scripts now that full code is present
-RUN composer dump-autoload --optimize
-
 # Set permissions
 RUN chown -R www-data:www-data /opt/updive-nsm \
     && chmod -R 755 /opt/updive-nsm/storage /opt/updive-nsm/bootstrap/cache \
