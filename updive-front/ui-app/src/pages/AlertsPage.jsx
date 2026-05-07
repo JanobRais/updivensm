@@ -3,7 +3,7 @@ import { StatCard, Badge, Icon, PageHeader } from '../components/Charts';
 import {
   getAlertsV2, getAlertStatsV2, getAlertDetailV2, getAlertsGrouped,
   ackAlertV2, unackAlertV2, muteAlertV2, unmuteAlertV2,
-  bulkAckV2, bulkUnackV2, bulkMuteV2,
+  bulkAckV2, bulkUnackV2, bulkMuteV2, getAlertLogV2,
 } from '../api';
 
 // ─── Design tokens (local) ──────────────────────────────────────────
@@ -339,6 +339,119 @@ const GroupedView = ({ accent, stateFilter }) => {
   );
 };
 
+// ─── Alert Log view ────────────────────────────────────────────────
+const LOG_STATE = { 0: { label: 'Clear', color: '#22c55e' }, 1: { label: 'Active', color: '#ef4444' }, 2: { label: 'Acknowledged', color: '#3b82f6' } };
+
+const AlertLogView = ({ accent }) => {
+  const [logs,      setLogs]      = useState([]);
+  const [loading,   setLoading]   = useState(true);
+  const [cursor,    setCursor]    = useState(null);
+  const [hasMore,   setHasMore]   = useState(false);
+  const [loadMore_,  setLoadMore_] = useState(false);
+  const [hostname,  setHostname]  = useState('');
+  const [stateFlt,  setStateFlt]  = useState('');
+  const debRef = useRef(null);
+
+  const load = useCallback(async (cur = null) => {
+    if (!cur) setLoading(true); else setLoadMore_(true);
+    try {
+      const params = { limit: 50 };
+      if (hostname)  params.hostname = hostname;
+      if (stateFlt)  params.state    = stateFlt;
+      if (cur)       params.cursor   = cur;
+      const res = await getAlertLogV2(params);
+      const rows = res.data || [];
+      if (cur) setLogs(p => [...p, ...rows]); else setLogs(rows);
+      setCursor(res.meta?.next_cursor || null);
+      setHasMore(res.meta?.has_more || false);
+    } catch { setLogs([]); }
+    finally { setLoading(false); setLoadMore_(false); }
+  }, [hostname, stateFlt]);
+
+  useEffect(() => {
+    clearTimeout(debRef.current);
+    debRef.current = setTimeout(() => load(), 400);
+    return () => clearTimeout(debRef.current);
+  }, [hostname, stateFlt]);
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <input
+          placeholder="Filter by hostname..."
+          value={hostname}
+          onChange={e => setHostname(e.target.value)}
+          style={S.input}
+        />
+        <select value={stateFlt} onChange={e => setStateFlt(e.target.value)} style={{ ...S.input, width: 140 }}>
+          <option value="">All states</option>
+          <option value="1">Active</option>
+          <option value="2">Acknowledged</option>
+          <option value="0">Clear</option>
+        </select>
+        <button onClick={() => load()} style={S.btn(accent)}>Refresh</button>
+      </div>
+
+      <div style={S.card}>
+        {loading ? (
+          <div style={{ padding: 40, textAlign: 'center' }}><Spinner /></div>
+        ) : logs.length === 0 ? (
+          <div style={{ padding: 40, textAlign: 'center', color: '#9ca3af', fontSize: 12 }}>
+            No alert log entries found
+          </div>
+        ) : (
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr>
+                {['Time', 'Device', 'Rule', 'Severity', 'State', 'Details'].map(h => (
+                  <th key={h} style={S.th}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {logs.map((log, i) => {
+                const st = LOG_STATE[log.state] || { label: String(log.state), color: '#9ca3af' };
+                return (
+                  <tr key={log.id || i} style={{ borderTop: '1px solid #f0f2f5', background: i % 2 === 0 ? '#fff' : '#fafafa' }}>
+                    <td style={{ ...S.td, fontSize: 10, color: '#6b7280', whiteSpace: 'nowrap' }}>{log.time_logged}</td>
+                    <td style={S.td}>
+                      <div style={{ fontWeight: 700, color: '#111827', fontSize: 12 }}>{log.device?.hostname || '—'}</div>
+                      <div style={{ fontSize: 10, color: '#9ca3af' }}>{log.device?.sysName}</div>
+                    </td>
+                    <td style={{ ...S.td, maxWidth: 200 }}>
+                      <span style={{ fontSize: 12, color: '#374151' }}>{log.rule?.name || '—'}</span>
+                    </td>
+                    <td style={S.td}><SevDot sev={log.rule?.severity} /></td>
+                    <td style={S.td}>
+                      <span style={{ padding: '2px 8px', borderRadius: 10, background: st.color + '20', color: st.color, fontSize: 10, fontWeight: 700 }}>
+                        {st.label}
+                      </span>
+                    </td>
+                    <td style={{ ...S.td, fontSize: 10, color: '#6b7280', maxWidth: 200, wordBreak: 'break-word' }}>
+                      {log.details || '—'}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {hasMore && !loading && (
+        <div style={{ textAlign: 'center' }}>
+          <button onClick={() => load(cursor)} disabled={loadMore_} style={{ ...S.btn(accent), padding: '8px 24px', fontSize: 12 }}>
+            {loadMore_ ? <Spinner /> : 'Load More'}
+          </button>
+        </div>
+      )}
+      {!hasMore && logs.length > 0 && !loading && (
+        <div style={{ textAlign: 'center', fontSize: 11, color: '#9ca3af' }}>{logs.length} entries shown</div>
+      )}
+    </div>
+  );
+};
+
 // ═══════════════════════════════════════════════════════════════════
 // Main AlertsPage
 // ═══════════════════════════════════════════════════════════════════
@@ -529,11 +642,15 @@ export const AlertsPage = ({ accent }) => {
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
           <button onClick={() => setView('table')}   style={S.tab(view === 'table',   accent)}>Table</button>
           <button onClick={() => setView('grouped')} style={S.tab(view === 'grouped', accent)}>Grouped</button>
+          <button onClick={() => setView('log')}     style={S.tab(view === 'log',     accent)}>Log</button>
         </div>
       </div>
 
       {/* Grouped view */}
       {view === 'grouped' && <GroupedView accent={accent} stateFilter={stateFilter} />}
+
+      {/* Alert Log view */}
+      {view === 'log' && <AlertLogView accent={accent} />}
 
       {/* Table view */}
       {view === 'table' && (

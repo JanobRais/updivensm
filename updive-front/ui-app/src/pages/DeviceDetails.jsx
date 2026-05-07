@@ -3,7 +3,7 @@ import { PageHeader, StatCard, Badge, TableCard, TD } from '../components/Charts
 import {
   getDeviceDetails, getDevicePorts, getDeviceProcessors,
   getDeviceMempools, getDeviceAlerts, getDeviceEventlog, getDeviceLinks,
-  getMetrics,
+  getMetrics, getInventory, getDeviceHealth,
 } from '../api';
 
 const fmt = {
@@ -47,7 +47,7 @@ const TIME_RANGES = [
   { label: '30d', value: '-1M' },
 ];
 
-const ALL_TABS = ['Overview', 'Interfaces', 'CPU', 'Memory', 'Alerts', 'Eventlog', 'Metrics', 'Graphs'];
+const ALL_TABS = ['Overview', 'Interfaces', 'CPU', 'Memory', 'Alerts', 'Eventlog', 'Metrics', 'Graphs', 'Inventory', 'Health'];
 
 const Section = ({ title, children, action }) => (
   <div style={{ background: '#fff', borderRadius: 10, border: '1px solid #e8ecf0', overflow: 'hidden' }}>
@@ -424,6 +424,14 @@ const DeviceDetailsPage = ({ hostname, onBack, accent }) => {
   const [mLoading,  setMLoading]  = useState(false);
   const [mTick,     setMTick]     = useState(0);
 
+  // Inventory tab state
+  const [inventory,    setInventory]    = useState([]);
+  const [invLoading,   setInvLoading]   = useState(false);
+
+  // Health tab state
+  const [health,       setHealth]       = useState(null);
+  const [healthLoading,setHealthLoading]= useState(false);
+
   useEffect(() => {
     setLoading(true);
     setSelPort(null);
@@ -455,6 +463,32 @@ const DeviceDetailsPage = ({ hostname, onBack, accent }) => {
     const hours  = M_PRESETS.find(p => p.label === mPreset)?.h ?? 6;
     const from   = mAgo(hours);
     const to     = (() => { const d = new Date(); const p = n => String(n).padStart(2,'0'); return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:00`; })();
+
+    if (mPortId === 'all') {
+      const activePorts = ports
+        .filter(p => (p.ifInOctets_rate || 0) > 0 || (p.ifOutOctets_rate || 0) > 0)
+        .sort((a, b) => ((b.ifInOctets_rate || 0) + (b.ifOutOctets_rate || 0)) - ((a.ifInOctets_rate || 0) + (a.ifOutOctets_rate || 0)))
+        .slice(0, 10);
+      setMLoading(true);
+      Promise.all(activePorts.flatMap(port => [
+        getMetrics({ device_id: devId, metric_type: 'port_in',  from, to, resolution: 'auto', limit: 300, object_id: port.port_id })
+          .then(r => ({ portId: port.port_id, portName: port.ifName, type: 'port_in',  rows: r.metrics ?? [] }))
+          .catch(() => ({ portId: port.port_id, portName: port.ifName, type: 'port_in',  rows: [] })),
+        getMetrics({ device_id: devId, metric_type: 'port_out', from, to, resolution: 'auto', limit: 300, object_id: port.port_id })
+          .then(r => ({ portId: port.port_id, portName: port.ifName, type: 'port_out', rows: r.metrics ?? [] }))
+          .catch(() => ({ portId: port.port_id, portName: port.ifName, type: 'port_out', rows: [] })),
+      ])).then(results => {
+        const byPort = {};
+        results.forEach(r => {
+          if (!byPort[r.portId]) byPort[r.portId] = { portId: r.portId, portName: r.portName };
+          byPort[r.portId][r.type] = r.rows;
+        });
+        setMData({ _allPorts: Object.values(byPort) });
+        setMLoading(false);
+      });
+      return;
+    }
+
     const portId = mPortId ?? ports[0]?.port_id ?? null;
     setMLoading(true);
     Promise.all(M_DEFS.map(mt => {
@@ -468,6 +502,26 @@ const DeviceDetailsPage = ({ hostname, onBack, accent }) => {
       setMLoading(false);
     });
   }, [tab, device, mPreset, mPortId, mTick]);
+
+  // Load inventory when tab is active
+  useEffect(() => {
+    if (tab !== 'Inventory' || !device) return;
+    setInvLoading(true);
+    getInventory(hostname)
+      .then(setInventory)
+      .catch(() => setInventory([]))
+      .finally(() => setInvLoading(false));
+  }, [tab, hostname, device]);
+
+  // Load health when tab is active
+  useEffect(() => {
+    if (tab !== 'Health' || !device) return;
+    setHealthLoading(true);
+    getDeviceHealth(hostname)
+      .then(setHealth)
+      .catch(() => setHealth(null))
+      .finally(() => setHealthLoading(false));
+  }, [tab, hostname, device]);
 
   if (loading) return <div style={{ padding: 40, textAlign: 'center', color: '#9ca3af' }}>Loading SNMP data...</div>;
   if (!device)  return <div style={{ padding: 40, textAlign: 'center', color: '#ef4444' }}>Device not found.</div>;
@@ -818,10 +872,11 @@ const DeviceDetailsPage = ({ hostname, onBack, accent }) => {
               <>
                 <span style={{ fontSize:11, color:'#6b7280', fontWeight:600, marginLeft:6 }}>Port:</span>
                 <select
-                  value={mPortId ?? ports[0]?.port_id ?? ''}
-                  onChange={e => setMPortId(Number(e.target.value))}
+                  value={mPortId === 'all' ? 'all' : (mPortId ?? ports[0]?.port_id ?? '')}
+                  onChange={e => setMPortId(e.target.value === 'all' ? 'all' : Number(e.target.value))}
                   style={{ padding:'4px 8px', fontSize:11, border:'1px solid #e5e7eb', borderRadius:6,
                     fontFamily:'inherit', cursor:'pointer', outline:'none', color:'#374151' }}>
+                  <option value="all">All Ports (active)</option>
                   {ports.map(p => <option key={p.port_id} value={p.port_id}>{p.ifName}</option>)}
                 </select>
               </>
@@ -835,7 +890,52 @@ const DeviceDetailsPage = ({ hostname, onBack, accent }) => {
           </div>
 
           {/* 2×2 chart grid or empty state */}
-          {Object.keys(mData).length === 0 || M_DEFS.every(mt => (mData[mt.type] ?? []).length === 0) ? (
+          {mPortId === 'all' ? (
+            // All active ports view
+            (mData._allPorts || []).length === 0 ? (
+              <div style={{ background:'#fff', borderRadius:10, border:'1px dashed #e8ecf0', padding:40, textAlign:'center' }}>
+                <div style={{ fontSize:14, fontWeight:600, color:'#374151', marginBottom:8 }}>Aktiv portlar topilmadi</div>
+                <div style={{ fontSize:12, color:'#9ca3af' }}>Hozirda trafik o'tayotgan portlar yo'q.</div>
+              </div>
+            ) : (
+              <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
+                {(mData._allPorts || []).map(portData => {
+                  const portObj = ports.find(p => p.port_id === portData.portId);
+                  const inRate  = portObj ? fmt.rate(portObj.ifInOctets_rate)  : '—';
+                  const outRate = portObj ? fmt.rate(portObj.ifOutOctets_rate) : '—';
+                  return (
+                    <div key={portData.portId} style={{ background:'#fff', borderRadius:10, border:'1px solid #e8ecf0', padding:'12px 14px' }}>
+                      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10 }}>
+                        <span style={{ fontSize:13, fontWeight:700, color:'#111827' }}>{portData.portName}</span>
+                        <div style={{ display:'flex', gap:12, fontSize:11 }}>
+                          <span style={{ color:'#3b82f6', fontWeight:600 }}>↓ {inRate}</span>
+                          <span style={{ color:'#8b5cf6', fontWeight:600 }}>↑ {outRate}</span>
+                        </div>
+                      </div>
+                      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+                        {[
+                          { type:'port_in',  label:'Traffic In',  color:'#3b82f6', unit:'Bps' },
+                          { type:'port_out', label:'Traffic Out', color:'#8b5cf6', unit:'Bps' },
+                        ].map(mt => {
+                          const rows = portData[mt.type] ?? [];
+                          const last = rows.length > 0 ? rows[rows.length-1]?.value : null;
+                          return (
+                            <div key={mt.type}>
+                              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:4 }}>
+                                <span style={{ fontSize:11, fontWeight:600, color:'#374151' }}>{mt.label}</span>
+                                {last !== null && <span style={{ fontSize:11, fontWeight:700, color:mt.color }}>{mFmt(last, mt.unit)}</span>}
+                              </div>
+                              <MiniChart uid={`${portData.portId}-${mt.type}`} data={rows} unit={mt.unit} color={mt.color} />
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )
+          ) : Object.keys(mData).length === 0 || M_DEFS.every(mt => (mData[mt.type] ?? []).length === 0) ? (
             <div style={{ background:'#fff', borderRadius:10, border:'1px dashed #e8ecf0', padding:40, textAlign:'center' }}>
               <div style={{ fontSize:14, fontWeight:600, color:'#374151', marginBottom:8 }}>Ma'lumot topilmadi</div>
               <div style={{ fontSize:12, color:'#9ca3af' }}>Ushbu qurilma (ayniqsa kameralar) standart CPU, Memory va Port metrikalarini doimiy uzatmasligi mumkin.</div>
@@ -865,7 +965,7 @@ const DeviceDetailsPage = ({ hostname, onBack, accent }) => {
           )}
 
           {/* Stats summary row */}
-          {Object.keys(mData).length > 0 && (
+          {mPortId !== 'all' && Object.keys(mData).length > 0 && (
             <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:12 }}>
               {M_DEFS.map(mt => {
                 const rows = mData[mt.type] ?? [];
@@ -889,6 +989,122 @@ const DeviceDetailsPage = ({ hostname, onBack, accent }) => {
                 );
               })}
             </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Inventory ──────────────────────────────────────────────── */}
+      {tab === 'Inventory' && (
+        <Section title={`Hardware Inventory${inventory.length ? ` (${inventory.length})` : ''}`}>
+          {invLoading ? (
+            <div style={{ padding: 32, textAlign: 'center', color: '#9ca3af', fontSize: 12 }}>Loading...</div>
+          ) : inventory.length === 0 ? (
+            <div style={{ padding: 32, textAlign: 'center', color: '#9ca3af', fontSize: 12 }}>
+              No inventory data available for this device.
+            </div>
+          ) : (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr style={{ background: '#f9fafb' }}>
+                    {['Name', 'Description', 'Class', 'Model', 'Serial', 'Manufacturer', 'FW Rev'].map(h => (
+                      <th key={h} style={{ padding: '9px 14px', fontSize: 10, fontWeight: 700, color: '#6b7280', textAlign: 'left', textTransform: 'uppercase', letterSpacing: '0.05em', whiteSpace: 'nowrap', borderBottom: '1px solid #f0f2f5' }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {inventory.map((item, i) => (
+                    <tr key={item.entPhysicalIndex ?? i} style={{ borderBottom: '1px solid #f9fafb', background: i % 2 === 0 ? '#fff' : '#fafafa' }}>
+                      <td style={{ padding: '8px 14px', fontSize: 12, fontWeight: 600, color: '#111827' }}>{item.entPhysicalName || '—'}</td>
+                      <td style={{ padding: '8px 14px', fontSize: 11, color: '#374151', maxWidth: 240, wordBreak: 'break-word' }}>{item.entPhysicalDescr || '—'}</td>
+                      <td style={{ padding: '8px 14px', fontSize: 11, color: '#6b7280' }}>
+                        <span style={{ background: '#f3f4f6', padding: '2px 7px', borderRadius: 4, fontFamily: 'monospace', fontSize: 10 }}>
+                          {item.entPhysicalClass || '—'}
+                        </span>
+                      </td>
+                      <td style={{ padding: '8px 14px', fontSize: 11, color: '#374151', fontFamily: 'monospace' }}>{item.entPhysicalModelName || '—'}</td>
+                      <td style={{ padding: '8px 14px', fontSize: 11, color: '#374151', fontFamily: 'monospace' }}>{item.entPhysicalSerialNum || '—'}</td>
+                      <td style={{ padding: '8px 14px', fontSize: 11, color: '#374151' }}>{item.entPhysicalMfgName || '—'}</td>
+                      <td style={{ padding: '8px 14px', fontSize: 11, color: '#6b7280', fontFamily: 'monospace' }}>{item.entPhysicalFirmwareRev || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Section>
+      )}
+
+      {/* ── Health ─────────────────────────────────────────────────── */}
+      {tab === 'Health' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {healthLoading ? (
+            <div style={{ background: '#fff', borderRadius: 10, border: '1px solid #e8ecf0', padding: 40, textAlign: 'center', color: '#9ca3af', fontSize: 12 }}>
+              Loading health data...
+            </div>
+          ) : !health || (Array.isArray(health.health) && health.health.length === 0) ? (
+            <div style={{ background: '#fff', borderRadius: 10, border: '1px dashed #e8ecf0', padding: 40, textAlign: 'center' }}>
+              <div style={{ fontSize: 14, fontWeight: 600, color: '#374151', marginBottom: 8 }}>No Health Sensors</div>
+              <div style={{ fontSize: 12, color: '#9ca3af' }}>This device does not report SNMP health sensors (temperature, voltage, fans, etc.).</div>
+            </div>
+          ) : (
+            <>
+              {/* If response is a list of type strings */}
+              {Array.isArray(health.health) && typeof health.health[0] === 'string' && (
+                <Section title="Available Health Sensor Types">
+                  <div style={{ padding: '14px 18px', display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                    {health.health.map(type => (
+                      <span key={type} style={{ background: `${accent}15`, color: accent, fontSize: 11, fontWeight: 600, padding: '4px 12px', borderRadius: 20, textTransform: 'capitalize' }}>
+                        {type}
+                      </span>
+                    ))}
+                  </div>
+                </Section>
+              )}
+
+              {/* If response contains sensor objects */}
+              {Array.isArray(health.health) && typeof health.health[0] === 'object' && (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px,1fr))', gap: 12 }}>
+                  {health.health.map((sensor, i) => {
+                    const pct  = sensor.sensor_limit > 0 ? Math.min(100, Math.round((sensor.sensor_current / sensor.sensor_limit) * 100)) : null;
+                    const warn = pct !== null && sensor.sensor_limit_warn ? Math.round((sensor.sensor_limit_warn / sensor.sensor_limit) * 100) : 75;
+                    const barColor = pct !== null ? (pct >= warn ? '#ef4444' : pct >= 50 ? '#f59e0b' : accent) : accent;
+                    return (
+                      <div key={sensor.sensor_id ?? i} style={{ background: '#fff', borderRadius: 10, border: '1px solid #e8ecf0', padding: '14px 16px' }}>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>
+                          {sensor.sensor_class || 'Sensor'}
+                        </div>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: '#111827', marginBottom: 4 }}>
+                          {sensor.sensor_descr || `Sensor #${sensor.sensor_id}`}
+                        </div>
+                        <div style={{ fontSize: 18, fontWeight: 700, color: barColor, marginBottom: 8 }}>
+                          {sensor.sensor_current ?? '—'}
+                          {sensor.sensor_class === 'temperature' ? ' °C' : sensor.sensor_class === 'voltage' ? ' V' : sensor.sensor_class === 'fanspeed' ? ' RPM' : ''}
+                        </div>
+                        {pct !== null && (
+                          <div style={{ background: '#f0f2f5', borderRadius: 4, height: 5 }}>
+                            <div style={{ width: `${pct}%`, height: '100%', borderRadius: 4, background: barColor, transition: 'width 0.4s' }} />
+                          </div>
+                        )}
+                        {(sensor.sensor_limit || sensor.sensor_limit_warn) && (
+                          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4, fontSize: 9, color: '#9ca3af' }}>
+                            <span>Warn: {sensor.sensor_limit_warn ?? '—'}</span>
+                            <span>Limit: {sensor.sensor_limit ?? '—'}</span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Raw data fallback */}
+              {(!Array.isArray(health.health) || health.health.length === 0) && health.count === 0 && (
+                <div style={{ background: '#fff', borderRadius: 10, border: '1px dashed #e8ecf0', padding: 32, textAlign: 'center', color: '#9ca3af', fontSize: 12 }}>
+                  No sensors reported by this device.
+                </div>
+              )}
+            </>
           )}
         </div>
       )}

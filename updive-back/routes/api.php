@@ -26,8 +26,8 @@ Route::prefix('v0')->group(function (): void {
         return response()->json(['relationships' => $rows]);
     });
 
-    // ── Services CRUD (bypasses Nagios plugin check) ─────────────
-    Route::prefix('services')->group(function (): void {
+    // ── Services CRUD ─────────────────────────────────────────────
+    Route::middleware(['can:admin'])->prefix('services')->group(function (): void {
         Route::post('', function (\Illuminate\Http\Request $req) {
             $req->validate([
                 'device_id'    => 'required|integer|exists:devices,device_id',
@@ -102,11 +102,11 @@ Route::prefix('v0')->group(function (): void {
 
     // Device sub-resource data endpoints (not in legacy API)
     Route::get('devices/{hostname}/processors', function ($hostname) {
-        $device = \App\Models\Device::where('hostname', $hostname)->orWhere('ip', $hostname)->firstOrFail();
+        $device = \App\Models\Device::with('processors')->where('hostname', $hostname)->orWhere('ip', $hostname)->firstOrFail();
         return response()->json(['status' => 'ok', 'processors' => $device->processors->toArray(), 'count' => $device->processors->count()]);
     });
     Route::get('devices/{hostname}/mempools', function ($hostname) {
-        $device = \App\Models\Device::where('hostname', $hostname)->orWhere('ip', $hostname)->firstOrFail();
+        $device = \App\Models\Device::with('mempools')->where('hostname', $hostname)->orWhere('ip', $hostname)->firstOrFail();
         return response()->json(['status' => 'ok', 'mempools' => $device->mempools->toArray(), 'count' => $device->mempools->count()]);
     });
 
@@ -398,7 +398,7 @@ Route::prefix('v0')->group(function (): void {
                     'id'          => $t->id,
                     'description' => $t->description,
                     'disabled'    => (bool) $t->disabled,
-                    'token_hash'  => $t->token_hash,
+                    'token_preview' => substr($t->token_hash, 0, 8) . '...',
                 ]);
                 return response()->json(['status' => 'ok', 'tokens' => $tokens]);
             })->where('id', '[0-9]+');
@@ -408,10 +408,11 @@ Route::prefix('v0')->group(function (): void {
                 $u = \App\Models\User::findOrFail($id);
                 $token = \Illuminate\Support\Str::random(64);
                 $t = $u->apiTokens()->create([
-                    'token_hash'  => $token,
+                    'token_hash'  => hash('sha256', $token),
                     'description' => $req->input('description'),
                     'disabled'    => 0,
                 ]);
+                // Return plain token once — never stored in plain text
                 return response()->json(['status' => 'ok', 'token' => $token, 'id' => $t->id], 201);
             })->where('id', '[0-9]+');
 
@@ -554,6 +555,191 @@ Route::prefix('v0')->group(function (): void {
         Route::get('device/{hostname}', [App\Api\Controllers\LegacyApiController::class, 'get_port_security'])->name('get_port_security_by_hostname');
         Route::get('', [App\Api\Controllers\LegacyApiController::class, 'get_port_security'])->name('get_port_security');
     });
+    // ── Device Templates CRUD ─────────────────────────────────────
+    Route::prefix('device-templates')->group(function (): void {
+
+        Route::get('', function (\Illuminate\Http\Request $req) {
+            $q = \DB::table('device_templates')->orderBy('vendor')->orderBy('name');
+            if ($req->filled('vendor')) $q->where('vendor', $req->input('vendor'));
+            if ($req->filled('type'))   $q->where('type',   $req->input('type'));
+            if ($req->filled('search')) $q->where(function ($s) use ($req) {
+                $s->where('name', 'like', '%'.$req->input('search').'%')
+                  ->orWhere('vendor', 'like', '%'.$req->input('search').'%')
+                  ->orWhere('os_name', 'like', '%'.$req->input('search').'%');
+            });
+            return response()->json(['status' => 'ok', 'templates' => $q->get()]);
+        });
+
+        Route::get('{id}', function ($id) {
+            $t = \DB::table('device_templates')->find($id);
+            if (!$t) return response()->json(['status' => 'error', 'message' => 'Not found'], 404);
+            return response()->json(['status' => 'ok', 'template' => $t]);
+        })->where('id', '[0-9]+');
+
+        Route::post('', function (\Illuminate\Http\Request $req) {
+            $req->validate([
+                'name'    => 'required|string|max:255',
+                'os_name' => 'required|string|max:100|unique:device_templates,os_name',
+                'vendor'  => 'nullable|string|max:100',
+                'type'    => 'nullable|in:network,server,camera,printer,ups,other',
+            ]);
+            $id = \DB::table('device_templates')->insertGetId([
+                'name'               => $req->input('name'),
+                'os_name'            => $req->input('os_name'),
+                'vendor'             => $req->input('vendor', ''),
+                'display_name'       => $req->input('display_name', $req->input('name')),
+                'type'               => $req->input('type', 'network'),
+                'icon'               => $req->input('icon', ''),
+                'description'        => $req->input('description', ''),
+                'sys_object_ids'     => json_encode($req->input('sys_object_ids', [])),
+                'sys_descr_patterns' => json_encode($req->input('sys_descr_patterns', [])),
+                'mib_dirs'           => json_encode($req->input('mib_dirs', [])),
+                'modules'            => json_encode($req->input('modules', [])),
+                'custom_oids'        => json_encode($req->input('custom_oids', [])),
+                'builtin'            => false,
+                'created_at'         => now(),
+                'updated_at'         => now(),
+            ]);
+            return response()->json(['status' => 'ok', 'message' => 'Template created', 'id' => $id], 201);
+        });
+
+        Route::put('{id}', function (\Illuminate\Http\Request $req, $id) {
+            $t = \DB::table('device_templates')->find($id);
+            if (!$t) return response()->json(['status' => 'error', 'message' => 'Not found'], 404);
+            $req->validate([
+                'name'    => 'required|string|max:255',
+                'os_name' => 'required|string|max:100|unique:device_templates,os_name,'.$id,
+            ]);
+            \DB::table('device_templates')->where('id', $id)->update([
+                'name'               => $req->input('name'),
+                'os_name'            => $req->input('os_name'),
+                'vendor'             => $req->input('vendor', ''),
+                'display_name'       => $req->input('display_name', $req->input('name')),
+                'type'               => $req->input('type', 'network'),
+                'icon'               => $req->input('icon', ''),
+                'description'        => $req->input('description', ''),
+                'sys_object_ids'     => json_encode($req->input('sys_object_ids', [])),
+                'sys_descr_patterns' => json_encode($req->input('sys_descr_patterns', [])),
+                'mib_dirs'           => json_encode($req->input('mib_dirs', [])),
+                'modules'            => json_encode($req->input('modules', [])),
+                'custom_oids'        => json_encode($req->input('custom_oids', [])),
+                'updated_at'         => now(),
+            ]);
+            return response()->json(['status' => 'ok', 'message' => 'Template updated']);
+        })->where('id', '[0-9]+');
+
+        Route::delete('{id}', function ($id) {
+            $t = \DB::table('device_templates')->find($id);
+            if (!$t) return response()->json(['status' => 'error', 'message' => 'Not found'], 404);
+            if ($t->builtin) return response()->json(['status' => 'error', 'message' => 'Cannot delete built-in template'], 403);
+            \DB::table('device_templates')->delete($id);
+            return response()->json(['status' => 'ok', 'message' => 'Template deleted']);
+        })->where('id', '[0-9]+');
+    });
+
+    // ── MIB Files CRUD + upload ───────────────────────────────────
+    Route::prefix('mib-files')->group(function (): void {
+
+        Route::get('', function (\Illuminate\Http\Request $req) {
+            $q = \DB::table('mib_files')->orderBy('vendor')->orderBy('filename');
+            if ($req->filled('vendor')) $q->where('vendor', $req->input('vendor'));
+            return response()->json([
+                'status'   => 'ok',
+                'mibs'     => $q->get(['id','filename','vendor','mib_name','size','valid','parse_error','created_at']),
+            ]);
+        });
+
+        // Upload MIB file (multipart or raw text body)
+        Route::post('', function (\Illuminate\Http\Request $req) {
+            $req->validate([
+                'vendor'   => 'required|string|max:100',
+                'filename' => 'required|string|max:255',
+                'content'  => 'required|string',
+            ]);
+
+            $vendor   = strtolower(trim($req->input('vendor')));
+            $filename = trim($req->input('filename'));
+            $content  = $req->input('content');
+
+            // Try to extract MIB module name from content
+            preg_match('/^(\S+)\s+DEFINITIONS\s*::=\s*BEGIN/mi', $content, $m);
+            $mibName = $m[1] ?? pathinfo($filename, PATHINFO_FILENAME);
+
+            // Validate by writing to temp and running snmptranslate
+            $tmpDir  = sys_get_temp_dir().'/updive_mibs_'.$vendor;
+            @mkdir($tmpDir, 0755, true);
+            $tmpFile = $tmpDir.'/'.$filename;
+            file_put_contents($tmpFile, $content);
+
+            $valid      = false;
+            $parseError = null;
+            $mibPath    = '/opt/updive-nsm/mibs';
+            $safeVendor  = escapeshellarg("{$mibPath}/{$vendor}:{$tmpDir}");
+            $safeMibName = escapeshellarg($mibName);
+            exec("snmptranslate -M {$safeVendor} -m {$safeMibName} {$safeMibName}::. 2>&1", $out, $code);
+            if ($code === 0) {
+                $valid = true;
+                // Also save to the actual mibs directory
+                $destDir = "/opt/updive-nsm/mibs/{$vendor}";
+                @mkdir($destDir, 0755, true);
+                file_put_contents("{$destDir}/{$filename}", $content);
+            } else {
+                $parseError = implode("\n", array_slice($out, 0, 5));
+            }
+            @unlink($tmpFile);
+
+            $id = \DB::table('mib_files')->updateOrInsert(
+                ['vendor' => $vendor, 'filename' => $filename],
+                [
+                    'mib_name'    => $mibName,
+                    'content'     => $content,
+                    'size'        => strlen($content),
+                    'valid'       => $valid,
+                    'parse_error' => $parseError,
+                    'created_at'  => now(),
+                    'updated_at'  => now(),
+                ]
+            );
+
+            return response()->json([
+                'status'      => 'ok',
+                'message'     => $valid ? 'MIB uploaded and validated' : 'MIB uploaded (parse warning)',
+                'mib_name'    => $mibName,
+                'valid'       => $valid,
+                'parse_error' => $parseError,
+            ], 201);
+        });
+
+        Route::get('{id}', function ($id) {
+            $m = \DB::table('mib_files')->find($id);
+            if (!$m) return response()->json(['status' => 'error', 'message' => 'Not found'], 404);
+            return response()->json(['status' => 'ok', 'mib' => $m]);
+        })->where('id', '[0-9]+');
+
+        Route::post('{id}/validate', function ($id) {
+            $m = \DB::table('mib_files')->find($id);
+            if (!$m) return response()->json(['status' => 'error', 'message' => 'Not found'], 404);
+            $mibPath     = '/opt/updive-nsm/mibs';
+            $safeVendor  = escapeshellarg("{$mibPath}/{$m->vendor}");
+            $safeMibName = escapeshellarg($m->mib_name);
+            exec("snmptranslate -M {$safeVendor} -m {$safeMibName} {$safeMibName}::. 2>&1", $out, $code);
+            $valid = ($code === 0);
+            $err   = $valid ? null : implode("\n", array_slice($out, 0, 5));
+            \DB::table('mib_files')->where('id', $id)->update(['valid' => $valid, 'parse_error' => $err, 'updated_at' => now()]);
+            return response()->json(['status' => 'ok', 'valid' => $valid, 'parse_error' => $err]);
+        })->where('id', '[0-9]+');
+
+        Route::delete('{id}', function ($id) {
+            $m = \DB::table('mib_files')->find($id);
+            if (!$m) return response()->json(['status' => 'error', 'message' => 'Not found'], 404);
+            // Remove from filesystem too
+            $dest = "/opt/updive-nsm/mibs/{$m->vendor}/{$m->filename}";
+            if (file_exists($dest)) @unlink($dest);
+            \DB::table('mib_files')->delete($id);
+            return response()->json(['status' => 'ok', 'message' => 'MIB deleted']);
+        })->where('id', '[0-9]+');
+    });
+
     // Route not found
     Route::any('/{path?}', [App\Api\Controllers\LegacyApiController::class, 'api_not_found'])->where('path', '.*');
 });

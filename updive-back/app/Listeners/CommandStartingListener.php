@@ -86,7 +86,9 @@ class CommandStartingListener
         }
 
         $UpdiveNSM_user = config('UpdiveNSM.user');
-        if ($UpdiveNSM_user !== $current_user) {
+        // Also accept www-data as a valid user (Docker default)
+        $allowed = array_filter([$UpdiveNSM_user, 'www-data']);
+        if (! in_array($current_user, $allowed, true)) {
             throw new RunningAsIncorrectUserException("Error: $executable must be run as the user $UpdiveNSM_user.");
         }
     }

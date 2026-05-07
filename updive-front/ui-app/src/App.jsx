@@ -1,7 +1,27 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Component } from 'react';
 import { Sidebar, TopBar } from './components/Layout';
+
+class ErrorBoundary extends Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(error) { return { error }; }
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{ padding: 40, textAlign: 'center' }}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: '#ef4444', marginBottom: 8 }}>Something went wrong</div>
+          <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 16 }}>{this.state.error.message}</div>
+          <button onClick={() => this.setState({ error: null })}
+            style={{ fontSize: 12, padding: '6px 16px', borderRadius: 6, border: '1px solid #d1d5db', background: '#fff', cursor: 'pointer' }}>
+            Try again
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 import DashboardPage from './pages/Dashboard';
-import { DevicesPage, PortsPage, LogsPage, PollersPage, BgpPage, SystemPage, PlaceholderPage } from './pages/AllPages';
+import { DevicesPage, PortsPage, LogsPage, PollersPage, PollerGroupsPage, BgpPage, SystemPage, PlaceholderPage } from './pages/AllPages';
 import ServicesPage from './pages/ServicesPage';
 import AlertsPage from './pages/AlertsPage';
 import AlertRulesPage from './pages/AlertRulesPage';
@@ -9,6 +29,7 @@ import DeviceDetailsPage from './pages/DeviceDetails';
 import UsersPage from './pages/UsersPage';
 import SettingsPage from './pages/SettingsPage';
 import MetricsPage from './pages/MetricsPage';
+import TemplatesPage from './pages/TemplatesPage';
 import {
   OspfPage, VrfPage, VlansPage, DeviceGroupsPage, PortGroupsPage,
   LocationsPage, BillsPage, PortSecurityPage, ArpPage,
@@ -71,10 +92,12 @@ function App() {
       case 'logs':          return <LogsPage accent={ACCENT} />;
       case 'services':      return <ServicesPage accent={ACCENT} />;
       case 'pollers':       return <PollersPage accent={ACCENT} />;
+      case 'poller_groups': return <PollerGroupsPage accent={ACCENT} />;
       case 'bgp':           return <BgpPage accent={ACCENT} />;
       case 'system':        return <SystemPage accent={ACCENT} />;
       case 'users':         return <UsersPage accent={ACCENT} />;
       case 'settings':      return <SettingsPage accent={ACCENT} />;
+      case 'templates':     return <TemplatesPage accent={ACCENT} />;
       case 'metrics':        return <MetricsPage accent={ACCENT} />;
       case 'ospf':           return <OspfPage />;
       case 'vrf':            return <VrfPage />;
@@ -106,7 +129,9 @@ function App() {
         />
 
         <main style={{ flex: 1, overflowY: 'auto', padding: '20px 24px' }}>
-          {renderPage()}
+          <ErrorBoundary key={activePage}>
+            {renderPage()}
+          </ErrorBoundary>
         </main>
       </div>
     </div>

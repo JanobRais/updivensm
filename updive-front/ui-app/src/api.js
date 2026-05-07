@@ -2,9 +2,26 @@ import axios from 'axios';
 
 const api = axios.create({
   baseURL: '/api/v0',
-  timeout: 15000,
+  timeout: 30000,
   headers: { 'Accept': 'application/json' }
 });
+
+// Global response interceptor — normalize errors
+api.interceptors.response.use(
+  res => res,
+  err => {
+    const status  = err.response?.status;
+    const message = err.response?.data?.message ?? err.response?.data?.error ?? err.message ?? 'Unknown error';
+    if (status === 401 || status === 403) {
+      console.error('[API] Auth error:', message);
+    } else if (status >= 500) {
+      console.error('[API] Server error:', message);
+    } else if (!err.response) {
+      console.error('[API] Network error:', err.message);
+    }
+    return Promise.reject(err);
+  }
+);
 
 // ─── 30-second in-memory cache ───────────────────────────────────
 const CACHE = new Map();
@@ -28,6 +45,8 @@ const PORT_COLUMNS = 'port_id,device_id,ifIndex,ifName,ifAlias,ifOperStatus,ifAd
 export const getDevices      = () => cached('devices',   () => api.get('/devices').then(r => r.data?.devices ?? []));
 export const getAlerts       = () => cached('alerts',    () => api.get('/alerts').then(r => r.data?.alerts ?? []));
 export const getPollers      = () => cached('pollers',   () => api.get('/pollers').then(r => r.data?.pollers ?? []));
+export const getPollerLog    = () => cached('pollerlog', () => api.get('/pollers/log').then(r => r.data?.log ?? []));
+export const getPollerGroups = () => cached('pollergrp', () => api.get('/poller_group/').then(r => r.data?.get_poller_group ?? []));
 export const getServices       = (params = {}) => api.get('/services', { params }).then(r => r.data);
 export const createService     = (data)        => api.post('/services', data).then(r => r.data);
 export const updateService     = (id, data)    => api.patch(`/services/${id}`, data).then(r => r.data);
@@ -83,6 +102,20 @@ export const getUserTokens  = (id)         => api.get(`/users/${id}/tokens`).the
 export const createToken    = (id, desc)   => api.post(`/users/${id}/tokens`, { description: desc }).then(r => r.data);
 export const deleteToken    = (id, tid)    => api.delete(`/users/${id}/tokens/${tid}`).then(r => r.data);
 
+// ─── Device Templates ─────────────────────────────────────────────
+export const getTemplates       = (params = {}) => api.get('/device-templates',      { params }).then(r => r.data?.templates ?? []);
+export const getTemplate        = (id)           => api.get(`/device-templates/${id}`).then(r => r.data?.template ?? null);
+export const createTemplate     = (data)         => api.post('/device-templates',      data).then(r => r.data);
+export const updateTemplate     = (id, data)     => api.put(`/device-templates/${id}`, data).then(r => r.data);
+export const deleteTemplate     = (id)           => api.delete(`/device-templates/${id}`).then(r => r.data);
+
+// ─── MIB Files ───────────────────────────────────────────────────
+export const getMibFiles        = (params = {}) => api.get('/mib-files',              { params }).then(r => r.data?.mibs ?? []);
+export const getMibFile         = (id)           => api.get(`/mib-files/${id}`).then(r => r.data?.mib ?? null);
+export const uploadMib          = (data)         => api.post('/mib-files',             data).then(r => r.data);
+export const validateMib        = (id)           => api.post(`/mib-files/${id}/validate`).then(r => r.data);
+export const deleteMib          = (id)           => api.delete(`/mib-files/${id}`).then(r => r.data);
+
 export default api;
 
 // ═══════════════════════════════════════════════════════════════════
@@ -90,8 +123,12 @@ export default api;
 // ═══════════════════════════════════════════════════════════════════
 const apiV1 = axios.create({
   baseURL: '/api/v1',
-  timeout: 15000,
+  timeout: 30000,
   headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+});
+apiV1.interceptors.response.use(res => res, err => {
+  console.error('[API v1]', err.response?.data?.message ?? err.message);
+  return Promise.reject(err);
 });
 
 /**
@@ -120,8 +157,12 @@ export const createAlertRuleV1 = (form) => apiV1.post('/alert-rules', {
 // ═══════════════════════════════════════════════════════════════════
 const apiV2 = axios.create({
   baseURL: '/api/v2',
-  timeout: 15000,
+  timeout: 30000,
   headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+});
+apiV2.interceptors.response.use(res => res, err => {
+  console.error('[API v2]', err.response?.data?.message ?? err.message);
+  return Promise.reject(err);
 });
 
 // Read

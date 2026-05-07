@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { StatCard, Badge, Icon, TableCard, PageHeader, TD, BarChartSVG, MiniAreaSVG } from '../components/Charts';
-import { getDevices, getAlerts, getPorts, getLogs, getServices, getPollers, getBgp, getSystemInfo, addDevice, deleteDevice, updateDevice, invalidateCache } from '../api';
+import { getDevices, getAlerts, getPorts, getLogs, getServices, getPollers, getPollerLog, getPollerGroups, getBgp, getSystemInfo, addDevice, deleteDevice, updateDevice, invalidateCache } from '../api';
 
 // ─── FORM HELPERS ─────────────────────────────────────────────────
 const F = {
@@ -521,18 +521,196 @@ export const ServicesPage = ({ accent }) => {
 };
 
 // ─── POLLERS ──────────────────────────────────────────────────────
+const fmtDuration = (ms) => {
+  if (!ms && ms !== 0) return '—';
+  if (ms < 60) return `${ms.toFixed(1)}s`;
+  return `${Math.floor(ms / 60)}m ${(ms % 60).toFixed(0)}s`;
+};
+
+const timeAgo = (isoStr) => {
+  if (!isoStr) return '—';
+  const diff = Math.floor((Date.now() - new Date(isoStr)) / 1000);
+  if (diff < 60)  return `${diff}s ago`;
+  if (diff < 3600) return `${Math.floor(diff/60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff/3600)}h ago`;
+  return `${Math.floor(diff/86400)}d ago`;
+};
+
+const pollerStatus = (last_polled) => {
+  if (!last_polled) return 'unknown';
+  const diff = (Date.now() - new Date(last_polled)) / 1000;
+  if (diff < 300) return 'up';
+  if (diff < 900) return 'warning';
+  return 'down';
+};
+
 export const PollersPage = ({ accent }) => {
-  const [pollers, setPollers] = useState([]);
-  useEffect(() => { getPollers().then(setPollers).catch(() => {}); }, []);
+  const [log, setLog]     = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const load = () => {
+    setLoading(true);
+    getPollerLog().then(setLog).catch(() => {}).finally(() => setLoading(false));
+  };
+  useEffect(load, []);
+
+  // Group by poller_group
+  const groups = log.reduce((acc, r) => {
+    const g = r.poller_group || 'General';
+    if (!acc[g]) acc[g] = [];
+    acc[g].push(r);
+    return acc;
+  }, {});
+
+  const online  = log.filter(r => pollerStatus(r.last_polled) === 'up').length;
+  const warn    = log.filter(r => pollerStatus(r.last_polled) === 'warning').length;
+  const offline = log.filter(r => pollerStatus(r.last_polled) === 'down').length;
+
   return (
-    <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
-      <PageHeader title="Pollers" desc="SNMP polling nodes." />
-      {pollers.map(p => (
-        <div key={p.id} style={{ background:"#fff", borderRadius:10, border:"1px solid #e8ecf0", padding:20 }}>
-          <div style={{ fontSize:14, fontWeight:700, color:"#111827" }}>{p.poller_name||"poller"}</div>
-          <div style={{ fontSize:11, color:"#9ca3af" }}>Last polled: {p.last_polled||""}</div>
+    <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
+      <PageHeader title="Pollers" desc="SNMP polling node status and performance." />
+
+      {/* Summary cards */}
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:12 }}>
+        {[
+          { label:'Online',  value: online,  color:'#22c55e' },
+          { label:'Warning', value: warn,    color:'#f59e0b' },
+          { label:'Offline', value: offline, color:'#ef4444' },
+        ].map(c => (
+          <div key={c.label} style={{ background:'#fff', borderRadius:10, border:'1px solid #e8ecf0', padding:'16px 20px', display:'flex', alignItems:'center', gap:14 }}>
+            <div style={{ width:10, height:10, borderRadius:'50%', background:c.color, flexShrink:0 }} />
+            <div>
+              <div style={{ fontSize:22, fontWeight:700, color:'#111827', lineHeight:1 }}>{c.value}</div>
+              <div style={{ fontSize:11, color:'#9ca3af', marginTop:3 }}>{c.label}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Reload button */}
+      <div style={{ display:'flex', justifyContent:'flex-end' }}>
+        <button onClick={load} disabled={loading}
+          style={{ display:'flex', alignItems:'center', gap:6, fontSize:12, padding:'6px 14px',
+            border:'1px solid #e5e7eb', borderRadius:7, background:'#fff', cursor:'pointer', color:'#374151' }}>
+          <Icon name="refresh" size={13} />
+          Refresh
+        </button>
+      </div>
+
+      {loading && <div style={{ textAlign:'center', color:'#9ca3af', fontSize:13, padding:40 }}>Loading...</div>}
+
+      {!loading && log.length === 0 && (
+        <div style={{ background:'#fff', borderRadius:10, border:'1px solid #e8ecf0', padding:40, textAlign:'center', color:'#9ca3af', fontSize:13 }}>
+          No poller data found. Pollers register automatically after the first poll cycle.
+        </div>
+      )}
+
+      {/* Per-group tables */}
+      {Object.entries(groups).map(([groupName, rows]) => (
+        <div key={groupName} style={{ background:'#fff', borderRadius:10, border:'1px solid #e8ecf0', overflow:'hidden' }}>
+          <div style={{ padding:'14px 20px', borderBottom:'1px solid #f0f2f5', display:'flex', alignItems:'center', gap:8 }}>
+            <Icon name="cpu" size={14} color={accent} />
+            <span style={{ fontSize:13, fontWeight:700, color:'#111827' }}>{groupName}</span>
+            <span style={{ fontSize:11, color:'#9ca3af', marginLeft:4 }}>{rows.length} poller{rows.length !== 1 ? 's' : ''}</span>
+          </div>
+          <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+            <thead>
+              <tr style={{ background:'#f9fafb' }}>
+                {['Status','Hostname','Poller Group','Last Polled','Poll Duration'].map(h => (
+                  <th key={h} style={{ padding:'9px 14px', textAlign:'left', fontSize:11, fontWeight:600, color:'#6b7280', borderBottom:'1px solid #f0f2f5' }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r, i) => {
+                const st = pollerStatus(r.last_polled);
+                const dotColor = st === 'up' ? '#22c55e' : st === 'warning' ? '#f59e0b' : '#ef4444';
+                return (
+                  <tr key={i} style={{ borderTop: i === 0 ? 'none' : '1px solid #f0f2f5', background: i%2===0 ? '#fff' : '#fafafa' }}>
+                    <td style={{ padding:'10px 14px' }}>
+                      <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+                        <div style={{ width:8, height:8, borderRadius:'50%', background:dotColor }} />
+                        <span style={{ fontSize:11, fontWeight:600, color:dotColor, textTransform:'uppercase' }}>{st}</span>
+                      </div>
+                    </td>
+                    <TD mono bold>{r.hostname || '—'}</TD>
+                    <TD>{r.poller_group || 'General'}</TD>
+                    <td style={{ padding:'10px 14px', color:'#6b7280' }}>{timeAgo(r.last_polled)}</td>
+                    <td style={{ padding:'10px 14px' }}>
+                      <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                        <div style={{ width:60, height:5, background:'#f0f2f5', borderRadius:3, overflow:'hidden' }}>
+                          <div style={{ height:'100%', width:`${Math.min(100, (r.last_polled_timetaken / 60) * 100)}%`, background: r.last_polled_timetaken > 30 ? '#f59e0b' : accent, borderRadius:3 }} />
+                        </div>
+                        <span style={{ color:'#374151', fontFamily:'monospace', fontSize:11 }}>{fmtDuration(r.last_polled_timetaken)}</span>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
       ))}
+    </div>
+  );
+};
+
+// ─── POLLER GROUPS ────────────────────────────────────────────────
+export const PollerGroupsPage = ({ accent }) => {
+  const [groups, setGroups] = useState([]);
+  const [log,    setLog]    = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    Promise.all([getPollerGroups(), getPollerLog()])
+      .then(([g, l]) => { setGroups(g); setLog(l); })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+
+  // Count devices per group from log
+  const countByGroup = log.reduce((acc, r) => {
+    const id = r.poller_group_id ?? 0;
+    acc[id] = (acc[id] || 0) + 1;
+    return acc;
+  }, {});
+
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
+      <PageHeader title="Poller Groups" desc="Logical groups for distributing polling load." />
+
+      {loading && <div style={{ textAlign:'center', color:'#9ca3af', fontSize:13, padding:40 }}>Loading...</div>}
+
+      {!loading && groups.length === 0 && (
+        <div style={{ background:'#fff', borderRadius:10, border:'1px solid #e8ecf0', padding:40, textAlign:'center', color:'#9ca3af', fontSize:13 }}>
+          No poller groups defined. A default "General" group is used automatically.
+        </div>
+      )}
+
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(280px, 1fr))', gap:12 }}>
+        {groups.map((g, i) => (
+          <div key={g.id ?? i} style={{ background:'#fff', borderRadius:10, border:'1px solid #e8ecf0', padding:20 }}>
+            <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:12 }}>
+              <div style={{ width:36, height:36, borderRadius:9, background:`${accent}15`, display:'flex', alignItems:'center', justifyContent:'center' }}>
+                <Icon name="cpu" size={16} color={accent} />
+              </div>
+              <div>
+                <div style={{ fontSize:14, fontWeight:700, color:'#111827' }}>{g.group_name || `Group ${g.id}`}</div>
+                <div style={{ fontSize:11, color:'#9ca3af' }}>ID: {g.id}</div>
+              </div>
+            </div>
+            <div style={{ display:'flex', gap:20 }}>
+              <div>
+                <div style={{ fontSize:18, fontWeight:700, color:'#111827' }}>{countByGroup[g.id] ?? 0}</div>
+                <div style={{ fontSize:10, color:'#9ca3af' }}>Pollers</div>
+              </div>
+              {g.descr && (
+                <div style={{ fontSize:11, color:'#6b7280', lineHeight:1.5, flex:1 }}>{g.descr}</div>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 };

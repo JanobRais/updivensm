@@ -26,7 +26,8 @@ RUN apk add --no-cache \
     shadow \
     su-exec \
     util-linux \
-    tzdata && \
+    tzdata \
+    supervisor && \
     cp /usr/share/zoneinfo/Asia/Tashkent /etc/localtime && \
     echo "Asia/Tashkent" > /etc/timezone && \
     echo "date.timezone=Asia/Tashkent" > /usr/local/etc/php/conf.d/timezone.ini
@@ -48,18 +49,29 @@ RUN docker-php-ext-configure gd --with-freetype --with-jpeg \
 # Install Composer
 COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
 
-# Set working directory
 WORKDIR /opt/updive-nsm
 
-# Copy application files
+# Copy only dependency files first — improves layer caching
+# (composer install re-runs only when composer.json/lock change)
+COPY composer.json composer.lock ./
+RUN composer install --no-dev --optimize-autoloader --no-scripts --no-interaction
+
+# Copy the rest of the application
 COPY . .
+
+# Re-run autoloader scripts now that full code is present
+RUN composer dump-autoload --optimize
 
 # Set permissions
 RUN chown -R www-data:www-data /opt/updive-nsm \
-    && chmod -R 775 /opt/updive-nsm/storage /opt/updive-nsm/bootstrap/cache
+    && chmod -R 755 /opt/updive-nsm/storage /opt/updive-nsm/bootstrap/cache \
+    && chmod -R 775 /opt/updive-nsm/storage/logs
 
 # Nginx configuration
 COPY docker/nginx.conf /etc/nginx/http.d/default.conf
+
+# Configure Supervisor
+COPY docker/supervisord.conf /etc/supervisord.conf
 
 # Configure Cron for Alpine
 COPY docker/updive-nsm.cron /var/spool/cron/crontabs/www-data
@@ -71,5 +83,8 @@ COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
 EXPOSE 80
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+  CMD curl -f http://localhost/api/v0/ping || exit 1
 
 ENTRYPOINT ["entrypoint.sh"]
