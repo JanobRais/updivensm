@@ -7,6 +7,7 @@ services:
       - "5175:5175"      # 5173,5174 band bo'lishi mumkin → 5175 xavfsiz
     environment:
       - TZ=Asia/Tashkent
+      - IN_DOCKER=true
     depends_on:
       - app
 
