@@ -82,19 +82,29 @@ Artisan::command('poller:alerts', function (): void {
 
         // Replace table.column with just column for simple WHERE
         $whereClause = preg_replace('/\b\w+\.(\w+)\b/', '$1', $query);
-        // Unescape quotes
-        $whereClause = str_replace('\\"', '"', $whereClause);
+        if ($whereClause === null) continue;
+        // Convert escaped double-quotes to single quotes (SQL string literals)
+        $whereClause = str_replace('\\"', "'", $whereClause);
+        $whereClause = str_replace('"', "'", $whereClause);
+
+        if (empty($whereClause)) continue;
 
         try {
-            $q = \DB::table('devices')
-                ->select('devices.device_id', 'devices.hostname')
-                ->where('devices.ignore', 0);
-
-            if ($tableMap[$primaryTable]['join']) {
-                $q->join($primaryTable, \DB::raw($tableMap[$primaryTable]['join']));
+            if ($primaryTable === 'devices') {
+                $matchingDevices = \DB::table('devices')
+                    ->select('device_id', 'hostname')
+                    ->where('ignore', 0)
+                    ->whereRaw($whereClause)
+                    ->get();
+            } else {
+                [$leftCol, $rightCol] = explode(' = ', $tableMap[$primaryTable]['join']);
+                $matchingDevices = \DB::table('devices')
+                    ->select('devices.device_id', 'devices.hostname')
+                    ->where('devices.ignore', 0)
+                    ->join($primaryTable, trim($leftCol), '=', trim($rightCol))
+                    ->whereRaw($whereClause)
+                    ->get();
             }
-
-            $matchingDevices = $q->whereRaw($whereClause)->get();
         } catch (\Exception $e) {
             continue;
         }
