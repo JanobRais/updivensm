@@ -3,7 +3,8 @@ import { StatCard, Badge, Icon, PageHeader } from '../components/Charts';
 import {
   getAlertsV2, getAlertStatsV2, getAlertDetailV2, getAlertsGrouped,
   ackAlertV2, unackAlertV2, muteAlertV2, unmuteAlertV2,
-  bulkAckV2, bulkUnackV2, bulkMuteV2, getAlertLogV2,
+  bulkAckV2, bulkUnackV2, bulkMuteV2, getAlertLogV2, getDevicePorts,
+  getDeviceProcessors, getDeviceMempools,
 } from '../api';
 
 // ─── Design tokens (local) ──────────────────────────────────────────
@@ -94,39 +95,102 @@ const GraphStrip = ({ graphs }) => {
   );
 };
 
+// ─── Helpers ───────────────────────────────────────────────────────
+const fmtUptime = (sec) => {
+  if (!sec) return '—';
+  const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60);
+  return [d && `${d}d`, h && `${h}h`, `${m}m`].filter(Boolean).join(' ');
+};
+const fmtDate = (iso) => {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+};
+const fmtBps = (bps) => {
+  if (bps == null) return '—';
+  if (bps >= 1e9) return `${(bps / 1e9).toFixed(2)} Gbps`;
+  if (bps >= 1e6) return `${(bps / 1e6).toFixed(2)} Mbps`;
+  if (bps >= 1e3) return `${(bps / 1e3).toFixed(1)} Kbps`;
+  return `${bps} bps`;
+};
+const Section = ({ title, children }) => (
+  <div>
+    <div style={{ fontSize: 10, fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8, paddingBottom: 4, borderBottom: '1px solid #f0f2f5' }}>{title}</div>
+    {children}
+  </div>
+);
+const KV = ({ label, value, mono, color }) => value != null && value !== '' && value !== '—' ? (
+  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', padding: '4px 0', fontSize: 11, borderBottom: '1px solid #f9fafb' }}>
+    <span style={{ color: '#6b7280', flexShrink: 0, marginRight: 12 }}>{label}</span>
+    <span style={{ color: color || '#111827', fontWeight: 500, fontFamily: mono ? 'monospace' : 'inherit', textAlign: 'right', wordBreak: 'break-all' }}>{value}</span>
+  </div>
+) : null;
+
 // ─── Detail slide-over panel ───────────────────────────────────────
 const DetailPanel = ({ id, accent, onClose, onAction }) => {
-  const [data, setData]     = useState(null);
+  const [data,    setData]    = useState(null);
+  const [ports,   setPorts]   = useState([]);
+  const [procs,   setProcs]   = useState([]);
+  const [mems,    setMems]    = useState([]);
   const [loading, setLoading] = useState(true);
-  const [acting, setActing] = useState('');
+  const [acting,  setActing]  = useState('');
+  const [noteEdit, setNoteEdit] = useState(false);
+  const [noteVal,  setNoteVal]  = useState('');
+
+  const reload = async () => {
+    const d = await getAlertDetailV2(id);
+    setData(d.alert);
+    setNoteVal(d.alert?.note || '');
+    return d.alert;
+  };
 
   useEffect(() => {
-    setLoading(true);
-    setData(null);
-    getAlertDetailV2(id)
-      .then(d => setData(d.alert))
-      .catch(() => {})
-      .finally(() => setLoading(false));
+    setLoading(true); setData(null); setPorts([]); setProcs([]); setMems([]);
+    reload().then(a => {
+      if (a?.hostname) {
+        getDevicePorts(a.hostname).then(p => setPorts(p || [])).catch(() => {});
+        getDeviceProcessors(a.hostname).then(p => setProcs(p || [])).catch(() => {});
+        getDeviceMempools(a.hostname).then(m => setMems(m || [])).catch(() => {});
+      }
+    }).catch(() => {}).finally(() => setLoading(false));
   }, [id]);
 
   const act = async (fn, label) => {
     setActing(label);
-    try { await fn(); onAction(); const d = await getAlertDetailV2(id); setData(d.alert); }
+    try { await fn(); onAction(); await reload(); }
     catch (e) { console.error(e); }
     finally { setActing(''); }
   };
 
   const a = data;
+  const dev = a?.device;
+  const rule = a?.rule;
+
+  // Ports that match the rule condition (down + admin up)
+  const downPorts = ports.filter(p => p.ifOperStatus === 'down' && p.ifAdminStatus === 'up');
+  const isPortRule = rule?.query?.includes('ports.') || false;
+
+  const stateColor = STATE_COLOR[a?.state] || '#9ca3af';
 
   return (
     <div style={S.panel}>
       {/* Header */}
-      <div style={{ padding: '14px 18px', borderBottom: '1px solid #f0f2f5', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
-        <div>
-          <div style={{ fontSize: 14, fontWeight: 700, color: '#111827' }}>Alert Detail</div>
-          <div style={{ fontSize: 11, color: '#9ca3af' }}>ID #{id}</div>
+      <div style={{ padding: '14px 18px', borderBottom: '1px solid #f0f2f5', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexShrink: 0, background: stateColor + '08' }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+            <div style={{ width: 10, height: 10, borderRadius: '50%', background: stateColor, flexShrink: 0 }} />
+            <div style={{ fontSize: 14, fontWeight: 700, color: '#111827', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a?.rule_name || 'Alert'}</div>
+          </div>
+          <div style={{ fontSize: 11, color: '#6b7280', fontFamily: 'monospace' }}>{a?.hostname || `Alert #${id}`}</div>
+          {a && (
+            <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+              <StatePill state={a.state} />
+              <SevDot sev={a.severity} />
+              {a.muted && <span style={{ padding: '2px 8px', borderRadius: 10, background: '#fef3c7', color: '#92400e', fontSize: 10, fontWeight: 700 }}>MUTED</span>}
+              {a.until_clear && <span style={{ padding: '2px 8px', borderRadius: 10, background: '#eff6ff', color: '#1d4ed8', fontSize: 10, fontWeight: 700 }}>UNTIL CLEAR</span>}
+            </div>
+          )}
         </div>
-        <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#9ca3af', padding: 4 }}>
+        <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#9ca3af', padding: 4, flexShrink: 0 }}>
           <Icon name="x" size={18} />
         </button>
       </div>
@@ -135,119 +199,218 @@ const DetailPanel = ({ id, accent, onClose, onAction }) => {
       <div style={{ flex: 1, overflowY: 'auto', padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 16 }}>
         {loading && <div style={{ textAlign: 'center', padding: 40, color: '#9ca3af' }}><Spinner /></div>}
 
-        {a && (
-          <>
-            {/* Identity */}
-            <div>
-              <div style={{ fontSize: 15, fontWeight: 700, color: '#111827', marginBottom: 2 }}>{a.hostname}</div>
-              <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 8 }}>{a.rule_name}</div>
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                <StatePill state={a.state} />
-                <SevDot sev={a.severity} />
-                {a.muted && <span style={{ padding: '2px 8px', borderRadius: 10, background: '#fef3c7', color: '#92400e', fontSize: 10, fontWeight: 700 }}>MUTED</span>}
-                {a.until_clear && <span style={{ padding: '2px 8px', borderRadius: 10, background: '#eff6ff', color: '#1d4ed8', fontSize: 10, fontWeight: 700 }}>UNTIL CLEAR</span>}
-              </div>
-            </div>
+        {a && (<>
 
-            {/* Meta */}
-            <div style={{ fontSize: 11, color: '#6b7280' }}>
-              <div>Device ID: {a.device_id} · Rule ID: {a.rule_id}</div>
-              <div style={{ marginTop: 2 }}>Triggered: {a.timestamp}</div>
-              {a.muted_until && <div style={{ marginTop: 2 }}>Muted until: {a.muted_until}</div>}
-            </div>
+          {/* ── Alert timing ── */}
+          <Section title="Alert Info">
+            <KV label="Alert ID"      value={`#${a.id}`} mono />
+            <KV label="Triggered"     value={fmtDate(a.timestamp)} />
+            <KV label="Duration"      value={(() => { const diff = Math.floor((Date.now() - new Date(a.timestamp)) / 1000); return fmtUptime(diff); })()} />
+            <KV label="State"         value={a.state} />
+            <KV label="Severity"      value={a.severity} color={SEV_COLOR[a.severity]} />
+            <KV label="Muted until"   value={a.muted_until ? fmtDate(a.muted_until) : null} />
+          </Section>
 
-            {/* Note */}
-            {a.note && (
-              <div style={{ background: '#fefce8', borderRadius: 8, padding: '8px 12px', fontSize: 11, color: '#713f12', borderLeft: '3px solid #fbbf24' }}>
-                {a.note}
-              </div>
-            )}
-
-            {/* Component */}
-            <div>
-              <div style={{ fontSize: 11, fontWeight: 700, color: '#374151', marginBottom: 6 }}>Component</div>
-              <ComponentBlock component={a.component} />
-              {(!a.component || a.component.type === 'device') && (
-                <div style={{ fontSize: 11, color: '#9ca3af' }}>Device-level alert</div>
+          {/* ── Rule ── */}
+          {rule && (
+            <Section title="Rule">
+              <KV label="Name"     value={rule.name} />
+              <KV label="Severity" value={rule.severity} color={SEV_COLOR[rule.severity]} />
+              <KV label="Notes"    value={rule.notes} />
+              {rule.query && (
+                <div style={{ marginTop: 6, background: '#1e293b', borderRadius: 6, padding: '8px 10px' }}>
+                  <div style={{ fontSize: 9, color: '#64748b', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Query</div>
+                  <code style={{ fontSize: 11, color: '#7dd3fc', fontFamily: 'monospace', wordBreak: 'break-all', whiteSpace: 'pre-wrap' }}>{rule.query}</code>
+                </div>
               )}
-            </div>
+            </Section>
+          )}
 
-            {/* Graphs */}
-            {a.graphs?.length > 0 && (
-              <div>
-                <div style={{ fontSize: 11, fontWeight: 700, color: '#374151', marginBottom: 8 }}>Graphs</div>
-                <GraphStrip graphs={a.graphs} />
-              </div>
-            )}
-
-            {/* Severity trend */}
-            {a.trend?.length > 0 && (
-              <div>
-                <div style={{ fontSize: 11, fontWeight: 700, color: '#374151', marginBottom: 6 }}>Severity Trend</div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                  {a.trend.slice(0, 6).map((t, i) => (
-                    <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, padding: '3px 0' }}>
-                      <StatePill state={t.state} />
-                      <span style={{ color: '#9ca3af' }}>{t.time}</span>
-                    </div>
-                  ))}
+          {/* ── Device ── */}
+          {dev && (
+            <Section title="Device">
+              <KV label="Hostname"    value={dev.hostname} mono />
+              <KV label="sysName"     value={dev.sysName} />
+              <KV label="IP"          value={dev.overwrite_ip || dev.ip} mono />
+              <KV label="OS"          value={dev.os} />
+              <KV label="Type"        value={dev.type} />
+              <KV label="Hardware"    value={dev.hardware} />
+              <KV label="Status"      value={dev.status ? 'Online' : 'Offline'} color={dev.status ? '#22c55e' : '#ef4444'} />
+              <KV label="Uptime"      value={fmtUptime(dev.uptime)} />
+              <KV label="Last polled" value={fmtDate(dev.last_polled)} />
+              <KV label="Poll time"   value={dev.last_polled_timetaken ? `${dev.last_polled_timetaken?.toFixed(1)}s` : null} />
+              <KV label="SNMP ver"    value={dev.snmpver} />
+              <KV label="SNMP port"   value={dev.port} />
+              <KV label="sysObjectID" value={dev.sysObjectID} mono />
+              {dev.sysDescr && (
+                <div style={{ marginTop: 6, padding: '6px 10px', background: '#f9fafb', borderRadius: 6, fontSize: 10, color: '#6b7280', fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                  {dev.sysDescr}
                 </div>
-              </div>
-            )}
+              )}
+            </Section>
+          )}
 
-            {/* Related alerts */}
-            {a.related?.length > 0 && (
-              <div>
-                <div style={{ fontSize: 11, fontWeight: 700, color: '#374151', marginBottom: 6 }}>Related ({a.related.length})</div>
-                {a.related.slice(0, 5).map((r, i) => (
-                  <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '5px 8px', background: '#f9fafb', borderRadius: 6, marginBottom: 4, fontSize: 11 }}>
-                    <span style={{ color: '#374151' }}>{r.hostname} — {r.rule_name}</span>
-                    <span style={{ fontSize: 9, color: '#9ca3af', background: '#f3f4f6', padding: '1px 6px', borderRadius: 4 }}>{r.relation?.replace('_', ' ')}</span>
+          {/* ── CPU & Memory ── */}
+          {(procs.length > 0 || mems.length > 0) && (
+            <Section title="Current Performance">
+              {procs.map((p, i) => (
+                <div key={i} style={{ marginBottom: 8 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, marginBottom: 3 }}>
+                    <span style={{ color: '#6b7280' }}>{p.processor_descr || `CPU ${i + 1}`}</span>
+                    <span style={{ fontWeight: 700, color: p.processor_usage > 85 ? '#ef4444' : p.processor_usage > 70 ? '#f59e0b' : '#22c55e' }}>{p.processor_usage ?? 0}%</span>
                   </div>
-                ))}
-              </div>
-            )}
+                  <div style={{ height: 5, background: '#f0f2f5', borderRadius: 3, overflow: 'hidden' }}>
+                    <div style={{ height: '100%', width: `${p.processor_usage ?? 0}%`, background: p.processor_usage > 85 ? '#ef4444' : p.processor_usage > 70 ? '#f59e0b' : '#22c55e', borderRadius: 3 }} />
+                  </div>
+                </div>
+              ))}
+              {mems.map((m, i) => (
+                <div key={i} style={{ marginBottom: 8 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, marginBottom: 3 }}>
+                    <span style={{ color: '#6b7280' }}>{m.mempool_descr || `Memory ${i + 1}`}</span>
+                    <span style={{ fontWeight: 700, color: m.mempool_perc > 90 ? '#ef4444' : m.mempool_perc > 75 ? '#f59e0b' : '#22c55e' }}>{m.mempool_perc ?? 0}%</span>
+                  </div>
+                  <div style={{ height: 5, background: '#f0f2f5', borderRadius: 3, overflow: 'hidden' }}>
+                    <div style={{ height: '100%', width: `${m.mempool_perc ?? 0}%`, background: m.mempool_perc > 90 ? '#ef4444' : m.mempool_perc > 75 ? '#f59e0b' : '#22c55e', borderRadius: 3 }} />
+                  </div>
+                </div>
+              ))}
+            </Section>
+          )}
 
-            {/* History */}
-            {a.history?.length > 0 && (
-              <div>
-                <div style={{ fontSize: 11, fontWeight: 700, color: '#374151', marginBottom: 6 }}>History (last {a.history.length})</div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                  {a.history.slice(0, 8).map((h, i) => (
-                    <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, padding: '3px 0', borderBottom: '1px solid #f3f4f6' }}>
-                      <StatePill state={typeof h.state === 'object' ? h.state.name : h.state} />
-                      <span style={{ color: '#9ca3af' }}>{h.time_logged}</span>
+          {/* ── Affected ports ── */}
+          {isPortRule && (
+            <Section title={`Affected Ports (${downPorts.length} down)`}>
+              {downPorts.length === 0 && <div style={{ fontSize: 11, color: '#9ca3af' }}>No matching down ports found</div>}
+              {downPorts.slice(0, 20).map((p, i) => (
+                <div key={i} style={{ padding: '7px 10px', background: i % 2 === 0 ? '#fff' : '#f9fafb', borderRadius: 6, marginBottom: 3, border: '1px solid #f0f2f5' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 3 }}>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: '#111827', fontFamily: 'monospace' }}>{p.ifName}</span>
+                    <span style={{ fontSize: 10, padding: '1px 7px', borderRadius: 8, background: '#fee2e2', color: '#ef4444', fontWeight: 700 }}>DOWN</span>
+                  </div>
+                  {p.ifAlias && <div style={{ fontSize: 10, color: '#6b7280', marginBottom: 3 }}>{p.ifAlias}</div>}
+                  <div style={{ display: 'flex', gap: 12, fontSize: 10, color: '#9ca3af' }}>
+                    {p.ifSpeed > 0 && <span>Speed: {fmtBps(p.ifSpeed)}</span>}
+                    <span>Admin: {p.ifAdminStatus}</span>
+                    {p.ifPhysAddress && <span style={{ fontFamily: 'monospace' }}>{p.ifPhysAddress}</span>}
+                  </div>
+                </div>
+              ))}
+              {downPorts.length > 20 && <div style={{ fontSize: 10, color: '#9ca3af', textAlign: 'center', marginTop: 4 }}>+{downPorts.length - 20} more ports</div>}
+            </Section>
+          )}
+
+          {/* ── ComponentBlock (non-device types) ── */}
+          {a.component && a.component.type !== 'device' && (
+            <Section title="Component Detail">
+              <ComponentBlock component={a.component} />
+            </Section>
+          )}
+
+          {/* ── Graphs ── */}
+          {a.graphs?.length > 0 && (
+            <Section title="Graphs">
+              <GraphStrip graphs={a.graphs} />
+            </Section>
+          )}
+
+          {/* ── History timeline ── */}
+          {a.history?.length > 0 && (
+            <Section title={`History (${a.history.length} events)`}>
+              <div style={{ position: 'relative', paddingLeft: 16 }}>
+                <div style={{ position: 'absolute', left: 5, top: 0, bottom: 0, width: 2, background: '#f0f2f5' }} />
+                {a.history.map((h, i) => {
+                  const sc = typeof h.state === 'number' ? h.state : (h.state === 'active' ? 1 : 0);
+                  const col = sc === 1 ? '#ef4444' : sc === 2 ? '#3b82f6' : '#22c55e';
+                  const label = sc === 1 ? 'Active' : sc === 2 ? 'Acknowledged' : 'Cleared';
+                  return (
+                    <div key={i} style={{ display: 'flex', gap: 10, marginBottom: 8, alignItems: 'flex-start' }}>
+                      <div style={{ width: 10, height: 10, borderRadius: '50%', background: col, flexShrink: 0, marginTop: 2, position: 'relative', zIndex: 1 }} />
+                      <div>
+                        <div style={{ fontSize: 11, fontWeight: 600, color: col }}>{label}</div>
+                        <div style={{ fontSize: 10, color: '#9ca3af' }}>{fmtDate(h.time_logged)}</div>
+                      </div>
                     </div>
-                  ))}
+                  );
+                })}
+              </div>
+            </Section>
+          )}
+
+          {/* ── Trend ── */}
+          {a.trend?.length > 0 && (
+            <Section title="Severity Trend">
+              {a.trend.map((t, i) => (
+                <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, padding: '4px 0', borderBottom: '1px solid #f9fafb' }}>
+                  <StatePill state={t.state?.toLowerCase?.()} />
+                  <span style={{ color: '#9ca3af' }}>{fmtDate(t.time)}</span>
+                </div>
+              ))}
+            </Section>
+          )}
+
+          {/* ── Related alerts ── */}
+          {a.related?.length > 0 && (
+            <Section title={`Related Alerts (${a.related.length})`}>
+              {a.related.map((r, i) => (
+                <div key={i} style={{ padding: '7px 10px', background: '#f9fafb', borderRadius: 6, marginBottom: 4, border: '1px solid #f0f2f5' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 }}>
+                    <span style={{ fontSize: 11, fontWeight: 600, color: '#374151' }}>{r.rule_name}</span>
+                    <StatePill state={r.state} />
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#9ca3af' }}>
+                    <span style={{ fontFamily: 'monospace' }}>{r.hostname}</span>
+                    <span style={{ background: '#e5e7eb', padding: '1px 6px', borderRadius: 4 }}>{r.relation?.replace('_', ' ')}</span>
+                  </div>
+                </div>
+              ))}
+            </Section>
+          )}
+
+          {/* ── Note ── */}
+          <Section title="Note">
+            {!noteEdit ? (
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+                <div style={{ fontSize: 11, color: a.note ? '#374151' : '#9ca3af', flex: 1 }}>{a.note || 'No note added'}</div>
+                <button onClick={() => setNoteEdit(true)} style={{ ...S.ghost, fontSize: 10 }}>Edit</button>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <textarea value={noteVal} onChange={e => setNoteVal(e.target.value)}
+                  style={{ width: '100%', minHeight: 80, padding: '6px 8px', fontSize: 11, border: '1px solid #d1d5db', borderRadius: 6, fontFamily: 'inherit', resize: 'vertical', boxSizing: 'border-box' }} />
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <button onClick={async () => { await ackAlertV2(id, noteVal); setNoteEdit(false); await reload(); }} style={S.btn(accent, '#fff')}>Save</button>
+                  <button onClick={() => { setNoteEdit(false); setNoteVal(a.note || ''); }} style={S.ghost}>Cancel</button>
                 </div>
               </div>
             )}
-          </>
-        )}
+          </Section>
+
+        </>)}
       </div>
 
       {/* Actions */}
       {a && (
-        <div style={{ padding: '12px 18px', borderTop: '1px solid #f0f2f5', display: 'flex', gap: 8, flexShrink: 0, flexWrap: 'wrap' }}>
-          {a.state !== 'acknowledged' && (
-            <button disabled={!!acting} onClick={() => act(() => ackAlertV2(id), 'ack')} style={S.btn(accent)}>
-              {acting === 'ack' ? <Spinner /> : '✓ Ack'}
+        <div style={{ padding: '12px 18px', borderTop: '1px solid #f0f2f5', display: 'flex', gap: 8, flexShrink: 0, flexWrap: 'wrap', background: '#fafafa' }}>
+          {a.state !== 'acknowledged' ? (
+            <button disabled={!!acting} onClick={() => act(() => ackAlertV2(id, noteVal), 'ack')} style={S.btn(accent)}>
+              {acting === 'ack' ? <Spinner /> : '✓ Acknowledge'}
             </button>
-          )}
-          {a.state === 'acknowledged' && (
+          ) : (
             <button disabled={!!acting} onClick={() => act(() => unackAlertV2(id), 'unack')} style={S.btn('#6b7280')}>
-              {acting === 'unack' ? <Spinner /> : '↩ Unack'}
+              {acting === 'unack' ? <Spinner /> : '↩ Unacknowledge'}
             </button>
           )}
           {!a.muted ? (
             <button disabled={!!acting} onClick={() => act(() => muteAlertV2(id), 'mute')} style={S.btn('#f59e0b')}>
-              {acting === 'mute' ? <Spinner /> : '🔇 Mute'}
+              {acting === 'mute' ? <Spinner /> : 'Mute'}
             </button>
           ) : (
             <button disabled={!!acting} onClick={() => act(() => unmuteAlertV2(id), 'unmute')} style={S.btn('#22c55e')}>
-              {acting === 'unmute' ? <Spinner /> : '🔔 Unmute'}
+              {acting === 'unmute' ? <Spinner /> : 'Unmute'}
             </button>
           )}
+          <button onClick={onClose} style={{ ...S.ghost, marginLeft: 'auto' }}>Close</button>
         </div>
       )}
     </div>
