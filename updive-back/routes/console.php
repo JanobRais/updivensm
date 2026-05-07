@@ -50,15 +50,103 @@ Artisan::command('poller:ping
 })->purpose(__('Check if devices are up or down via icmp'));
 
 Artisan::command('poller:alerts', function (): void {
-    $command = [base_path('alerts.php')];
-    if (($verbosity = $this->getOutput()->getVerbosity()) >= 128) {
-        $command[] = '-d';
-        if ($verbosity >= 256) {
-            $command[] = '-v';
+    $rules   = \DB::table('alert_rules')->where('disabled', 0)->get();
+    $devices = \DB::table('devices')->where('ignore', 0)->get()->keyBy('device_id');
+    $fired   = 0;
+    $cleared = 0;
+    $now     = now();
+
+    foreach ($rules as $rule) {
+        // Build a raw query to evaluate the rule against all devices
+        // Supported simple field comparisons: table.column op value
+        // e.g. "ports.ifOperStatus = \"down\" AND ports.ifAdminStatus = \"up\""
+        $query = $rule->query ?? '';
+
+        // Map table references → actual tables with device_id join
+        $tableMap = [
+            'devices'    => ['table' => 'devices',    'join' => null],
+            'ports'      => ['table' => 'ports',      'join' => 'devices.device_id = ports.device_id'],
+            'processors' => ['table' => 'processors', 'join' => 'devices.device_id = processors.device_id'],
+            'mempools'   => ['table' => 'mempools',   'join' => 'devices.device_id = mempools.device_id'],
+        ];
+
+        // Detect primary table from query
+        preg_match_all('/(\w+)\.\w+/', $query, $tableMatches);
+        $tables = array_unique($tableMatches[1] ?? []);
+
+        // Skip macros (requires complex logic)
+        if (in_array('macros', $tables)) continue;
+
+        $primaryTable = collect($tables)->first(fn($t) => isset($tableMap[$t]));
+        if (! $primaryTable || ! isset($tableMap[$primaryTable])) continue;
+
+        // Replace table.column with just column for simple WHERE
+        $whereClause = preg_replace('/\b\w+\.(\w+)\b/', '$1', $query);
+        // Unescape quotes
+        $whereClause = str_replace('\\"', '"', $whereClause);
+
+        try {
+            $q = \DB::table('devices')
+                ->select('devices.device_id', 'devices.hostname')
+                ->where('devices.ignore', 0);
+
+            if ($tableMap[$primaryTable]['join']) {
+                $q->join($primaryTable, \DB::raw($tableMap[$primaryTable]['join']));
+            }
+
+            $matchingDevices = $q->whereRaw($whereClause)->get();
+        } catch (\Exception $e) {
+            continue;
+        }
+
+        $matchingIds = $matchingDevices->pluck('device_id')->unique()->values();
+
+        // Active alerts for this rule
+        $activeAlerts = \DB::table('alerts')
+            ->where('rule_id', $rule->id)
+            ->whereIn('state', [1, 2, 3])
+            ->get()
+            ->keyBy('device_id');
+
+        // Fire new alerts
+        foreach ($matchingIds as $deviceId) {
+            if (! isset($devices[$deviceId])) continue;
+            if ($activeAlerts->has($deviceId)) continue; // already active
+
+            \DB::table('alerts')->updateOrInsert(
+                ['rule_id' => $rule->id, 'device_id' => $deviceId],
+                ['state' => 1, 'open' => 1, 'alerted' => 0, 'note' => '', 'info' => json_encode([]), 'time_logged' => $now]
+            );
+            \DB::table('alert_log')->insert([
+                'rule_id'    => $rule->id,
+                'device_id'  => $deviceId,
+                'state'      => 1,
+                'details'    => json_encode(['rule' => $rule->name]),
+                'time_logged'=> $now,
+            ]);
+            $fired++;
+        }
+
+        // Clear alerts where condition no longer holds
+        foreach ($activeAlerts as $deviceId => $alert) {
+            if ($matchingIds->contains($deviceId)) continue;
+
+            \DB::table('alerts')
+                ->where('rule_id', $rule->id)
+                ->where('device_id', $deviceId)
+                ->update(['state' => 0, 'open' => 0]);
+            \DB::table('alert_log')->insert([
+                'rule_id'    => $rule->id,
+                'device_id'  => $deviceId,
+                'state'      => 0,
+                'details'    => json_encode(['rule' => $rule->name, 'cleared' => true]),
+                'time_logged'=> $now,
+            ]);
+            $cleared++;
         }
     }
 
-    (new Process($command))->setTimeout(null)->setIdleTimeout(null)->setTty(Process::isTtySupported())->run();
+    $this->info("Alerts: {$fired} fired, {$cleared} cleared.");
 })->purpose(__('Check for any pending alerts and deliver them via defined transports'));
 
 Artisan::command('poller:billing
