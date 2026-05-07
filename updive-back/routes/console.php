@@ -125,7 +125,7 @@ Artisan::command('poller:alerts', function (): void {
 
             \DB::table('alerts')->updateOrInsert(
                 ['rule_id' => $rule->id, 'device_id' => $deviceId],
-                ['state' => 1, 'open' => 1, 'alerted' => 0, 'note' => '', 'info' => json_encode([]), 'time_logged' => $now]
+                ['state' => 1, 'open' => 1, 'alerted' => 0, 'note' => '', 'info' => json_encode([])]
             );
             \DB::table('alert_log')->insert([
                 'rule_id'    => $rule->id,
