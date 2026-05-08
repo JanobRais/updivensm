@@ -106,6 +106,36 @@ const DetailPanel = ({ id, onClose, accent }) => {
                 </div>
               )}
 
+              {/* Smart Alert Thresholds */}
+              <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: '10px 14px' }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: '#64748b', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  Smart Alert Thresholds
+                </div>
+                <div style={{ display: 'flex', gap: 20 }}>
+                  <div>
+                    <div style={{ fontSize: 10, color: '#9ca3af', marginBottom: 2 }}>Confirm Count</div>
+                    <div style={{ fontSize: 18, fontWeight: 700, color: '#111827' }}>
+                      {rule.confirm_count ?? 1}
+                      <span style={{ fontSize: 11, fontWeight: 400, color: '#9ca3af', marginLeft: 4 }}>polls</span>
+                    </div>
+                  </div>
+                  <div style={{ width: 1, background: '#e5e7eb' }} />
+                  <div>
+                    <div style={{ fontSize: 10, color: '#9ca3af', marginBottom: 2 }}>Delay</div>
+                    <div style={{ fontSize: 18, fontWeight: 700, color: '#111827' }}>
+                      {rule.delay_min ?? 0}
+                      <span style={{ fontSize: 11, fontWeight: 400, color: '#9ca3af', marginLeft: 4 }}>min</span>
+                    </div>
+                  </div>
+                  <div style={{ flex: 1, alignSelf: 'center' }}>
+                    {(rule.confirm_count ?? 1) <= 1 && (rule.delay_min ?? 0) === 0
+                      ? <span style={{ fontSize: 10, color: '#f59e0b', background: '#fffbeb', padding: '2px 7px', borderRadius: 5, border: '1px solid #fde68a' }}>Instant fire</span>
+                      : <span style={{ fontSize: 10, color: '#10b981', background: '#f0fdf4', padding: '2px 7px', borderRadius: 5, border: '1px solid #bbf7d0' }}>Protected</span>
+                    }
+                  </div>
+                </div>
+              </div>
+
               {/* Notes */}
               {rule.notes && (
                 <div>
@@ -168,7 +198,7 @@ const DetailPanel = ({ id, onClose, accent }) => {
 };
 
 // ─── Rule Form Modal ───────────────────────────────────────────────
-const EMPTY = { name: '', severity: 'warning', query: '', notes: '', disabled: false, invert_map: false };
+const EMPTY = { name: '', severity: 'warning', query: '', notes: '', disabled: false, invert_map: false, confirm_count: 1, delay_min: 0 };
 
 const RuleModal = ({ initial, onSave, onClose, accent }) => {
   const [form, setForm] = useState(initial ?? EMPTY);
@@ -246,6 +276,39 @@ const RuleModal = ({ initial, onSave, onClose, accent }) => {
             <textarea style={{ ...S.input, height: 60, resize: 'vertical' }}
               value={form.notes} onChange={e => set('notes', e.target.value)}
               placeholder="Optional description or runbook link" />
+          </div>
+
+          {/* Smart Alert thresholds */}
+          <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: '12px 14px' }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: '#64748b', marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              Smart Alert Thresholds
+            </div>
+            <div style={{ display: 'flex', gap: 14 }}>
+              <div style={{ flex: 1 }}>
+                <label style={S.label}>
+                  Confirm Count
+                  <span style={{ fontWeight: 400, color: '#9ca3af', marginLeft: 4 }}>(1–10)</span>
+                </label>
+                <input type="number" min={1} max={10} style={{ ...S.input, width: '100%' }}
+                  value={form.confirm_count ?? 1}
+                  onChange={e => set('confirm_count', Math.max(1, Math.min(10, parseInt(e.target.value) || 1)))} />
+                <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 3 }}>
+                  Consecutive positive polls before firing
+                </div>
+              </div>
+              <div style={{ flex: 1 }}>
+                <label style={S.label}>
+                  Delay
+                  <span style={{ fontWeight: 400, color: '#9ca3af', marginLeft: 4 }}>(minutes)</span>
+                </label>
+                <input type="number" min={0} max={1440} style={{ ...S.input, width: '100%' }}
+                  value={form.delay_min ?? 0}
+                  onChange={e => set('delay_min', Math.max(0, parseInt(e.target.value) || 0))} />
+                <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 3 }}>
+                  Wait N min since first detection
+                </div>
+              </div>
+            </div>
           </div>
 
           <div style={{ display: 'flex', gap: 24 }}>

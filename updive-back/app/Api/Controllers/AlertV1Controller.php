@@ -359,6 +359,8 @@ class AlertV1Controller extends Controller
             'disabled'           => $v['start_disabled']    ?? false,
             'invert_map'         => $v['invert_device_map'] ?? false,
             'alert_operation_id' => $v['alert_operation_id'] ?? null,
+            'confirm_count'      => max(1, (int) ($v['confirm_count'] ?? 1)),
+            'delay_min'          => max(0, (int) ($v['delay_min'] ?? 0)),
             // `extra` stores per-rule notification meta; default matches LibreNMS convention
             'extra'              => ['mute' => false, 'count' => -1,
                                      'delay' => null, 'interval' => null,

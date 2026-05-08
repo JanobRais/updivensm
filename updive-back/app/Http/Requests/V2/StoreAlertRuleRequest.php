@@ -23,6 +23,8 @@ class StoreAlertRuleRequest extends FormRequest
             'proc'               => ['nullable', 'string', 'max:80'],
             'invert_map'         => ['boolean'],
             'alert_operation_id' => ['nullable', 'integer', 'exists:alert_operations,id'],
+            'confirm_count'      => ['nullable', 'integer', 'min:1', 'max:10'],
+            'delay_min'          => ['nullable', 'integer', 'min:0', 'max:1440'],
         ];
     }
 

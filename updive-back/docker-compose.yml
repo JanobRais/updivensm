@@ -4,10 +4,13 @@ services:
     container_name: updive-nsm-frontend
     restart: always
     ports:
-      - "5175:5175"      # 5173,5174 band bo'lishi mumkin → 5175 xavfsiz
+      - "5176:5176"
     environment:
       - TZ=Asia/Tashkent
       - IN_DOCKER=true
+    volumes:
+      - ../updive-front/ui-app:/app
+      - /app/node_modules
     depends_on:
       - app
 
@@ -16,7 +19,7 @@ services:
     container_name: updive-nsm-app
     restart: always
     ports:
-      - "8091:80"        # 8080,8086,8008,8009 band (SIEM) → 8091 ishlatiladi
+      - "8091:80"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
@@ -31,6 +34,7 @@ services:
       - UpdiveNSM_GROUP=www-data
     volumes:
       - .:/opt/updive-nsm
+      - ../updive-front/ui-app/dist:/opt/updive-nsm/ui:ro
     depends_on:
       - db
       - redis
@@ -40,7 +44,7 @@ services:
     container_name: updive-nsm-db
     restart: always
     ports:
-      - "3307:3306"      # 3306 standart, 5431 SIEM band → 3307 ishlatiladi
+      - "3307:3306"
     environment:
       - MYSQL_ROOT_PASSWORD=root_pass
       - MYSQL_DATABASE=updive_nsm
@@ -55,29 +59,25 @@ services:
     container_name: updive-nsm-redis
     restart: always
     ports:
-      - "6381:6379"      # 6380 SIEM-redis band → 6381 ishlatiladi
+      - "6381:6379"
     environment:
       - TZ=Asia/Tashkent
 
-  # ── SNMP Simulators ────────────────────────────────────────────────
-  # Cisco Catalyst 2960-X  |  community: public  |  SNMPv2c
+  # ── SNMP Simulators (dev only — comment out for production) ────────
   snmp-switch-01:
     image: tandrup/snmpsim:latest
     container_name: snmp-switch-01
-    hostname: snmp-switch-01
     restart: always
     volumes:
       - ./snmpsim/data/switch-01/public.snmprec:/usr/local/snmpsim/data/public.snmprec:ro
     environment:
       - TZ=Asia/Tashkent
     ports:
-      - "16101:161/udp"  # Xavfsiz (SIEM da yo'q)
+      - "16101:161/udp"
 
-  # Cisco Catalyst 3750-X  |  community: public  |  SNMPv2c
   snmp-switch-02:
     image: tandrup/snmpsim:latest
     container_name: snmp-switch-02
-    hostname: snmp-switch-02
     restart: always
     volumes:
       - ./snmpsim/data/switch-02/public.snmprec:/usr/local/snmpsim/data/public.snmprec:ro
@@ -86,11 +86,9 @@ services:
     ports:
       - "16102:161/udp"
 
-  # Cisco Catalyst 2960S  |  SW-SAM-FL1-01  |  Samarqand 1-qavat  |  community: public
   snmp-switch-03:
     image: tandrup/snmpsim:latest
     container_name: snmp-switch-03
-    hostname: snmp-switch-03
     restart: always
     volumes:
       - ./snmpsim/data/switch-03/public.snmprec:/usr/local/snmpsim/data/public.snmprec:ro
@@ -99,11 +97,9 @@ services:
     ports:
       - "16103:161/udp"
 
-  # Cisco Catalyst 2960S  |  SW-SAM-FL2-01  |  Samarqand 2-qavat  |  community: public
   snmp-switch-04:
     image: tandrup/snmpsim:latest
     container_name: snmp-switch-04
-    hostname: snmp-switch-04
     restart: always
     volumes:
       - ./snmpsim/data/switch-04/public.snmprec:/usr/local/snmpsim/data/public.snmprec:ro
@@ -112,11 +108,9 @@ services:
     ports:
       - "16104:161/udp"
 
-  # Cisco Catalyst 2960C  |  SW-SAM-MGMT-01  |  Samarqand Management  |  community: public
   snmp-switch-05:
     image: tandrup/snmpsim:latest
     container_name: snmp-switch-05
-    hostname: snmp-switch-05
     restart: always
     volumes:
       - ./snmpsim/data/switch-05/public.snmprec:/usr/local/snmpsim/data/public.snmprec:ro

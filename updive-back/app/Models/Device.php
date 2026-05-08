@@ -64,6 +64,7 @@ class Device extends BaseModel
         'location_id',
         'notes',
         'os',
+        'os_forced',
         'override_sysLocation',
         'overwrite_ip',
         'poller_group',

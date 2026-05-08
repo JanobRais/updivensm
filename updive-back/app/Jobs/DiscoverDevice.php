@@ -32,6 +32,10 @@ class DiscoverDevice implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
+    public string $queue = 'discovery';
+    public int $timeout  = 120;
+    public int $tries    = 1;
+
     private array $deviceArray;
     private ?Device $device = null;
 

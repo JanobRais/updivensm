@@ -12,6 +12,7 @@ use App\Polling\Measure\Measurement;
 use App\Polling\Measure\MeasurementManager;
 use Carbon\Carbon;
 use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
@@ -27,9 +28,24 @@ use UpdiveNSM\Util\Module;
 use UpdiveNSM\Util\ModuleList;
 use Throwable;
 
-class PollDevice implements ShouldQueue
+class PollDevice implements ShouldQueue, ShouldBeUnique
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
+
+    /** Kill the job after this many seconds (SNMP shouldn't take longer) */
+    public int $timeout = 30;
+
+    /** One attempt only — failed polls are logged, not retried */
+    public int $tries = 1;
+
+    /** Unique key prevents dispatching duplicate jobs for the same device */
+    public function uniqueId(): string
+    {
+        return 'poll_device_' . $this->device_id;
+    }
+
+    /** How long the unique lock is held (seconds) */
+    public int $uniqueFor = 300;
 
     private ?Device $device = null;
     private ?array $deviceArray = null;
@@ -46,6 +62,7 @@ class PollDevice implements ShouldQueue
         public int $device_id,
         public ModuleList $moduleList,
     ) {
+        $this->onQueue('poller');
     }
 
     /**
@@ -208,5 +225,23 @@ EOH, $this->device->hostname, $os_group ? " ($os_group)" : '', $this->device->de
         ], [
             'poller' => $this->device->last_polled_timetaken,
         ]);
+    }
+
+    public function failed(Throwable $exception): void
+    {
+        try {
+            $device = Device::find($this->device_id);
+            if ($device) {
+                Eventlog::log(
+                    'Parallel poller job failed: ' . $exception->getMessage(),
+                    $device,
+                    'poller',
+                    Severity::Error
+                );
+            }
+        } catch (Throwable) {
+            // don't throw inside failed()
+        }
+        Log::error("PollDevice job failed for device_id={$this->device_id}: " . $exception->getMessage());
     }
 }

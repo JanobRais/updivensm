@@ -4,6 +4,7 @@ import {
   getDeviceDetails, getDevicePorts, getDeviceProcessors,
   getDeviceMempools, getDeviceAlerts, getDeviceEventlog, getDeviceLinks,
   getMetrics, getInventory, getDeviceHealth,
+  getOsList, setDeviceOs, clearDeviceOs,
 } from '../api';
 
 const fmt = {
@@ -128,6 +129,7 @@ const SwitchPanel = ({ ports, selectedPort, onSelect, links = [] }) => {
   for (let i = 0; i < ports.length; i += ROW) rows.push(ports.slice(i, i + ROW).map((p, j) => ({ ...p, _slot: i + j + 1 })));
 
   const portColor = (p) => {
+    if (p.flapping)                                          return '#f59e0b';
     if (p.ifAdminStatus === 'down' || p.ifAdminStatus === 2) return '#475569';
     if (p.ifOperStatus === 'up'   || p.ifOperStatus === 1)  return '#22c55e';
     return '#ef4444';
@@ -246,9 +248,9 @@ const PortDetail = ({ port, accent, link }) => {
   const outRate = fmt.rate(port.ifOutOctets_rate);
   const inPkts  = port.ifInUcastPkts_rate  ? `${Math.round(port.ifInUcastPkts_rate)}  pps` : '—';
   const outPkts = port.ifOutUcastPkts_rate ? `${Math.round(port.ifOutUcastPkts_rate)} pps` : '—';
-  const util    = port.ifSpeed
+  const util    = (port.ifSpeed && port.ifSpeed > 0)
     ? Math.min(100, Math.round(((port.ifInOctets_rate || 0) + (port.ifOutOctets_rate || 0)) * 8 / port.ifSpeed * 100))
-    : 0;
+    : null;
 
   const statusColor = isUp ? '#22c55e' : '#ef4444';
 
@@ -283,7 +285,7 @@ const PortDetail = ({ port, accent, link }) => {
         {[
           ['↓ In',  inRate,  accent],
           ['↑ Out', outRate, '#3b82f6'],
-          ['Util',  util + '%', util > 80 ? '#ef4444' : util > 50 ? '#f59e0b' : '#22c55e'],
+          ['Util',  util !== null ? util + '%' : 'N/A', util !== null ? (util > 80 ? '#ef4444' : util > 50 ? '#f59e0b' : '#22c55e') : '#9ca3af'],
         ].map(([l, v, c]) => (
           <div key={l} style={{ padding: '12px 16px', textAlign: 'center', borderRight: '1px solid #f0f2f5' }}>
             <div style={{ fontSize: 10, color: '#9ca3af', fontWeight: 600, marginBottom: 4 }}>{l}</div>
@@ -418,11 +420,15 @@ const DeviceDetailsPage = ({ hostname, onBack, accent }) => {
   const [showAllPorts, setShowAllPorts] = useState(false);
 
   // Metrics tab state
-  const [mPreset,   setMPreset]   = useState('6h');
-  const [mPortId,   setMPortId]   = useState(null);
-  const [mData,     setMData]     = useState({});
-  const [mLoading,  setMLoading]  = useState(false);
-  const [mTick,     setMTick]     = useState(0);
+  const [mPreset,      setMPreset]      = useState('6h');
+  const [mRangeMode,   setMRangeMode]   = useState('preset'); // 'preset' | 'custom'
+  const [mCustomFrom,  setMCustomFrom]  = useState('');
+  const [mCustomTo,    setMCustomTo]    = useState('');
+  const [mApplied,     setMApplied]     = useState(0); // incremented on Apply
+  const [mPortId,      setMPortId]      = useState(null);
+  const [mData,        setMData]        = useState({});
+  const [mLoading,     setMLoading]     = useState(false);
+  const [mTick,        setMTick]        = useState(0);
 
   // Inventory tab state
   const [inventory,    setInventory]    = useState([]);
@@ -431,6 +437,12 @@ const DeviceDetailsPage = ({ hostname, onBack, accent }) => {
   // Health tab state
   const [health,       setHealth]       = useState(null);
   const [healthLoading,setHealthLoading]= useState(false);
+
+  // OS override modal state
+  const [showOsModal,  setShowOsModal]  = useState(false);
+  const [osList,       setOsList]       = useState([]);
+  const [osSelected,   setOsSelected]   = useState('');
+  const [osSaving,     setOsSaving]     = useState(false);
 
   useEffect(() => {
     setLoading(true);
@@ -456,13 +468,22 @@ const DeviceDetailsPage = ({ hostname, onBack, accent }) => {
     }).catch(() => setLoading(false));
   }, [hostname]);
 
+  const dtLocalToApi = v => v ? v.replace('T', ' ') + ':00' : null;
+
   // Load metrics when Metrics tab is active
   useEffect(() => {
     if (tab !== 'Metrics' || !device) return;
     const devId = device.device_id;
-    const hours  = M_PRESETS.find(p => p.label === mPreset)?.h ?? 6;
-    const from   = mAgo(hours);
-    const to     = (() => { const d = new Date(); const p = n => String(n).padStart(2,'0'); return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:00`; })();
+    let from, to;
+    if (mRangeMode === 'custom' && mCustomFrom && mCustomTo) {
+      from = dtLocalToApi(mCustomFrom);
+      to   = dtLocalToApi(mCustomTo);
+    } else {
+      const hours = M_PRESETS.find(p => p.label === mPreset)?.h ?? 6;
+      from = mAgo(hours);
+      const d = new Date(); const pad = n => String(n).padStart(2,'0');
+      to   = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:00`;
+    }
 
     if (mPortId === 'all') {
       const activePorts = ports
@@ -501,7 +522,7 @@ const DeviceDetailsPage = ({ hostname, onBack, accent }) => {
       setMData(d);
       setMLoading(false);
     });
-  }, [tab, device, mPreset, mPortId, mTick]);
+  }, [tab, device, mPreset, mRangeMode, mApplied, mPortId, mTick]);
 
   // Load inventory when tab is active
   useEffect(() => {
@@ -588,6 +609,97 @@ const DeviceDetailsPage = ({ hostname, onBack, accent }) => {
           </button>
         }
       />
+
+      {/* OS generic warning banner */}
+      {device.os === 'generic' && !device.os_forced && (
+        <div style={{ background: '#fefce8', border: '1px solid #fbbf24', borderRadius: 10, padding: '12px 18px',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: 20 }}>⚠️</span>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: '#92400e' }}>OS aniqlanmadi — <code style={{ background: '#fef08a', padding: '1px 6px', borderRadius: 4 }}>generic</code></div>
+              <div style={{ fontSize: 11, color: '#b45309', marginTop: 2 }}>
+                Ushbu qurilma uchun OS avtomatik tanilmadi. OID yoki sysDescr mos kelmadi.
+                {"Qo'lda OS belgilash orqali to'g'ri modul va grafiklarni yoqing."}
+              </div>
+            </div>
+          </div>
+          <button onClick={() => {
+            getOsList().then(list => { setOsList(list); setOsSelected(''); setShowOsModal(true); });
+          }} style={{
+            background: '#f59e0b', color: '#fff', border: 'none', borderRadius: 8,
+            padding: '8px 16px', fontSize: 12, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap', fontFamily: 'inherit',
+          }}>
+            OS belgilash
+          </button>
+        </div>
+      )}
+
+      {/* OS forced badge */}
+      {device.os_forced && (
+        <div style={{ background: '#f0fdf4', border: '1px solid #86efac', borderRadius: 10, padding: '10px 18px',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 16 }}>🔒</span>
+            <span style={{ fontSize: 12, color: '#166534', fontWeight: 600 }}>
+              {"OS qo'lda belgilangan:"} <strong>{device.os}</strong>
+            </span>
+          </div>
+          <button onClick={() => {
+            clearDeviceOs(hostname).then(() => {
+              setDevice(d => ({ ...d, os: d.os, os_forced: 0 }));
+              getDeviceDetails(hostname).then(setDevice);
+            });
+          }} style={{
+            background: 'transparent', color: '#16a34a', border: '1px solid #86efac',
+            borderRadius: 6, padding: '4px 12px', fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+          }}>
+            Tozalash
+          </button>
+        </div>
+      )}
+
+      {/* OS override modal */}
+      {showOsModal && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 1000,
+          display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ background: '#fff', borderRadius: 14, padding: 28, width: 420, maxWidth: '90vw',
+            boxShadow: '0 20px 60px rgba(0,0,0,0.25)' }}>
+            <div style={{ fontSize: 16, fontWeight: 700, color: '#111827', marginBottom: 6 }}>{"OS ni qo'lda belgilash"}</div>
+            <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 18 }}>
+              Qurilma: <strong>{hostname}</strong>
+            </div>
+            <label style={{ fontSize: 11, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 6 }}>OS tanlang</label>
+            <select value={osSelected} onChange={e => setOsSelected(e.target.value)} style={{
+              width: '100%', padding: '9px 12px', borderRadius: 8, border: '1px solid #d1d5db',
+              fontSize: 13, fontFamily: 'inherit', background: '#f9fafb', marginBottom: 20,
+            }}>
+              <option value="">-- Tanlang --</option>
+              {osList.map(o => <option key={o} value={o}>{o}</option>)}
+            </select>
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              <button onClick={() => setShowOsModal(false)} style={{
+                padding: '8px 16px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#f9fafb',
+                fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', color: '#374151',
+              }}>Bekor qilish</button>
+              <button disabled={!osSelected || osSaving} onClick={() => {
+                setOsSaving(true);
+                setDeviceOs(hostname, osSelected).then(() => {
+                  setShowOsModal(false);
+                  setOsSaving(false);
+                  setDevice(d => ({ ...d, os: osSelected, os_forced: 1 }));
+                }).catch(() => setOsSaving(false));
+              }} style={{
+                padding: '8px 16px', borderRadius: 8, border: 'none',
+                background: osSelected ? '#f59e0b' : '#e5e7eb', color: osSelected ? '#fff' : '#9ca3af',
+                fontSize: 12, fontWeight: 700, cursor: osSelected ? 'pointer' : 'default', fontFamily: 'inherit',
+              }}>
+                {osSaving ? 'Saqlanmoqda...' : 'Saqlash'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Stat cards */}
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
@@ -737,19 +849,36 @@ const DeviceDetailsPage = ({ hostname, onBack, accent }) => {
                       onClick={() => setSelPort(p)}
                       style={{
                         borderTop: '1px solid #f0f2f5',
-                        background: isSel ? `${accent}12` : i % 2 === 0 ? '#fff' : '#fafafa',
+                        background: p.flapping ? '#fffbeb' : isSel ? `${accent}12` : i % 2 === 0 ? '#fff' : '#fafafa',
                         cursor: 'pointer',
-                        borderLeft: isSel ? `3px solid ${accent}` : '3px solid transparent',
+                        borderLeft: p.flapping ? '3px solid #f59e0b' : isSel ? `3px solid ${accent}` : '3px solid transparent',
                       }}>
                       <TD mono>{p.ifIndex}</TD>
-                      <TD bold>{p.ifName}</TD>
+                      <td style={{ padding: '9px 14px' }}>
+                        <span style={{ fontWeight: 700, fontSize: 13, color: '#111827' }}>{p.ifName}</span>
+                        {p.flapping ? (
+                          <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: '#d97706',
+                            background: '#fef3c7', padding: '1px 6px', borderRadius: 4,
+                            border: '1px solid #fde68a', verticalAlign: 'middle' }}>
+                            FLAPPING
+                          </span>
+                        ) : null}
+                      </td>
                       <TD>{p.ifAlias || '—'}</TD>
                       <TD>{fmt.speed(p.ifSpeed)}</TD>
                       <td style={{ padding: '9px 14px' }}>
-                        <span style={{ fontSize: 11, fontWeight: 700, color: isUp ? '#22c55e' : '#ef4444',
-                          background: isUp ? '#f0fdf4' : '#fef2f2', padding: '2px 8px', borderRadius: 20 }}>
-                          {isUp ? 'up' : 'down'}
-                        </span>
+                        {p.flapping ? (
+                          <span style={{ fontSize: 11, fontWeight: 700, color: '#d97706',
+                            background: '#fef3c7', padding: '2px 8px', borderRadius: 20,
+                            border: '1px solid #fde68a' }}>
+                            flapping
+                          </span>
+                        ) : (
+                          <span style={{ fontSize: 11, fontWeight: 700, color: isUp ? '#22c55e' : '#ef4444',
+                            background: isUp ? '#f0fdf4' : '#fef2f2', padding: '2px 8px', borderRadius: 20 }}>
+                            {isUp ? 'up' : 'down'}
+                          </span>
+                        )}
                       </td>
                       <TD mono style={{ color: accent }}>{fmt.rate(p.ifInOctets_rate)}</TD>
                       <TD mono style={{ color: '#3b82f6' }}>{fmt.rate(p.ifOutOctets_rate)}</TD>
@@ -861,13 +990,36 @@ const DeviceDetailsPage = ({ hostname, onBack, accent }) => {
             display:'flex', gap:10, alignItems:'center', flexWrap:'wrap' }}>
             <span style={{ fontSize:11, color:'#6b7280', fontWeight:600 }}>Range:</span>
             {M_PRESETS.map(p => (
-              <button key={p.label} onClick={() => setMPreset(p.label)} style={{
+              <button key={p.label} onClick={() => { setMRangeMode('preset'); setMPreset(p.label); }} style={{
                 padding:'4px 12px', borderRadius:20, border:'none', fontSize:11, fontWeight:500,
                 cursor:'pointer', fontFamily:'inherit',
-                background: mPreset === p.label ? accent : '#f3f4f6',
-                color:       mPreset === p.label ? '#fff' : '#6b7280',
+                background: mRangeMode === 'preset' && mPreset === p.label ? accent : '#f3f4f6',
+                color:       mRangeMode === 'preset' && mPreset === p.label ? '#fff' : '#6b7280',
               }}>{p.label}</button>
             ))}
+            <button onClick={() => { setMRangeMode('custom'); if (!mCustomTo) { const now = new Date(); const pad = n => String(n).padStart(2,'0'); setMCustomTo(`${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`); } }} style={{
+              padding:'4px 12px', borderRadius:20, border:'none', fontSize:11, fontWeight:500,
+              cursor:'pointer', fontFamily:'inherit',
+              background: mRangeMode === 'custom' ? accent : '#f3f4f6',
+              color:       mRangeMode === 'custom' ? '#fff' : '#6b7280',
+            }}>Custom</button>
+            {mRangeMode === 'custom' && (
+              <>
+                <input type="datetime-local" value={mCustomFrom} onChange={e => setMCustomFrom(e.target.value)}
+                  style={{ padding:'3px 6px', fontSize:11, border:'1px solid #e5e7eb', borderRadius:6,
+                    fontFamily:'inherit', outline:'none', color:'#374151', cursor:'pointer' }} />
+                <span style={{ fontSize:11, color:'#9ca3af' }}>—</span>
+                <input type="datetime-local" value={mCustomTo} onChange={e => setMCustomTo(e.target.value)}
+                  style={{ padding:'3px 6px', fontSize:11, border:'1px solid #e5e7eb', borderRadius:6,
+                    fontFamily:'inherit', outline:'none', color:'#374151', cursor:'pointer' }} />
+                <button onClick={() => setMApplied(a => a+1)} disabled={!mCustomFrom || !mCustomTo || mLoading}
+                  style={{ padding:'4px 12px', fontSize:11, fontWeight:600, border:'none', borderRadius:7,
+                    background: (!mCustomFrom || !mCustomTo) ? '#e5e7eb' : '#10b981', color:'#fff',
+                    cursor: (!mCustomFrom || !mCustomTo) ? 'default' : 'pointer', fontFamily:'inherit' }}>
+                  Apply
+                </button>
+              </>
+            )}
             {ports.length > 0 && (
               <>
                 <span style={{ fontSize:11, color:'#6b7280', fontWeight:600, marginLeft:6 }}>Port:</span>
@@ -881,7 +1033,7 @@ const DeviceDetailsPage = ({ hostname, onBack, accent }) => {
                 </select>
               </>
             )}
-            <button onClick={() => setMTick(t => t+1)} disabled={mLoading} style={{
+            <button onClick={() => mRangeMode === 'custom' ? setMApplied(a => a+1) : setMTick(t => t+1)} disabled={mLoading} style={{
               marginLeft:'auto', padding:'5px 14px', fontSize:11, fontWeight:600, border:'none',
               borderRadius:7, background:accent, color:'#fff', cursor:'pointer', fontFamily:'inherit',
               opacity: mLoading ? 0.6 : 1 }}>

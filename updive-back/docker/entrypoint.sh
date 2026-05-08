@@ -49,5 +49,10 @@ su-exec www-data /usr/local/bin/php /opt/updive-nsm/artisan optimize:clear
 su-exec www-data /usr/local/bin/php /opt/updive-nsm/artisan migrate --force
 su-exec www-data /usr/local/bin/php /opt/updive-nsm/artisan db:seed --class=DeviceTemplatesSeeder --force || echo "[entrypoint] Seeder warning (non-fatal)"
 
+# Always use the latest nginx config from the mounted volume
+if [ -f /opt/updive-nsm/docker/nginx.conf ]; then
+    cp /opt/updive-nsm/docker/nginx.conf /etc/nginx/http.d/default.conf
+fi
+
 # Start Supervisor (which starts nginx, php-fpm, crond, and scheduler)
 exec /usr/bin/supervisord -c /etc/supervisord.conf

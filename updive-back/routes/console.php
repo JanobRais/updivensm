@@ -56,103 +56,157 @@ Artisan::command('poller:alerts', function (): void {
     $cleared = 0;
     $now     = now();
 
-    foreach ($rules as $rule) {
-        // Build a raw query to evaluate the rule against all devices
-        // Supported simple field comparisons: table.column op value
-        // e.g. "ports.ifOperStatus = \"down\" AND ports.ifAdminStatus = \"up\""
-        $query = $rule->query ?? '';
+    // Table → join definition for building WHERE queries
+    $tableMap = [
+        'devices'    => ['join' => null],
+        'ports'      => ['join' => 'devices.device_id = ports.device_id'],
+        'processors' => ['join' => 'devices.device_id = processors.device_id'],
+        'mempools'   => ['join' => 'devices.device_id = mempools.device_id'],
+    ];
 
-        // Map table references → actual tables with device_id join
-        $tableMap = [
-            'devices'    => ['table' => 'devices',    'join' => null],
-            'ports'      => ['table' => 'ports',      'join' => 'devices.device_id = ports.device_id'],
-            'processors' => ['table' => 'processors', 'join' => 'devices.device_id = processors.device_id'],
-            'mempools'   => ['table' => 'mempools',   'join' => 'devices.device_id = mempools.device_id'],
-        ];
+    foreach ($rules as $rule) {
+        $query        = $rule->query ?? '';
+        $confirmCount = max(1, (int) ($rule->confirm_count ?? 1));
+        $delayMin     = max(0, (int) ($rule->delay_min     ?? 0));
 
         // Detect primary table from query
-        preg_match_all('/(\w+)\.\w+/', $query, $tableMatches);
-        $tables = array_unique($tableMatches[1] ?? []);
+        preg_match_all('/(\w+)\.\w+/', $query, $m);
+        $tables = array_unique($m[1] ?? []);
 
-        // Skip macros (requires complex logic)
         if (in_array('macros', $tables)) continue;
 
-        $primaryTable = collect($tables)->first(fn($t) => isset($tableMap[$t]));
-        if (! $primaryTable || ! isset($tableMap[$primaryTable])) continue;
+        $primaryTable = collect($tables)->first(fn ($t) => isset($tableMap[$t]));
+        if (! $primaryTable) continue;
 
-        // Replace table.column with just column for simple WHERE
-        $whereClause = preg_replace('/\b\w+\.(\w+)\b/', '$1', $query);
-        if ($whereClause === null) continue;
-        // Convert escaped double-quotes to single quotes (SQL string literals)
-        $whereClause = str_replace('\\"', "'", $whereClause);
-        $whereClause = str_replace('"', "'", $whereClause);
+        // Strip table prefixes for raw WHERE (ports.ifOperStatus → ifOperStatus)
+        $where = preg_replace('/\b\w+\.(\w+)\b/', '$1', $query);
+        if (! $where) continue;
+        $where = str_replace(['\\"', '"'], ["'", "'"], $where);
+        if (empty($where)) continue;
 
-        if (empty($whereClause)) continue;
-
+        // Evaluate rule condition against all active devices
         try {
             if ($primaryTable === 'devices') {
                 $matchingDevices = \DB::table('devices')
-                    ->select('device_id', 'hostname')
+                    ->select('device_id')
                     ->where('ignore', 0)
-                    ->whereRaw($whereClause)
+                    ->whereRaw($where)
                     ->get();
             } else {
-                [$leftCol, $rightCol] = explode(' = ', $tableMap[$primaryTable]['join']);
+                [$left, $right] = explode(' = ', $tableMap[$primaryTable]['join']);
                 $matchingDevices = \DB::table('devices')
-                    ->select('devices.device_id', 'devices.hostname')
+                    ->select('devices.device_id')
                     ->where('devices.ignore', 0)
-                    ->join($primaryTable, trim($leftCol), '=', trim($rightCol))
-                    ->whereRaw($whereClause)
+                    ->join($primaryTable, trim($left), '=', trim($right))
+                    ->whereRaw($where)
                     ->get();
             }
-        } catch (\Exception $e) {
+        } catch (\Exception) {
             continue;
         }
 
         $matchingIds = $matchingDevices->pluck('device_id')->unique()->values();
 
-        // Active alerts for this rule
-        $activeAlerts = \DB::table('alerts')
+        // Load all non-cleared alerts for this rule (-1=pending, 1/2/3=active)
+        $existingAlerts = \DB::table('alerts')
             ->where('rule_id', $rule->id)
-            ->whereIn('state', [1, 2, 3])
+            ->whereIn('state', [-1, 1, 2, 3])
             ->get()
             ->keyBy('device_id');
 
-        // Fire new alerts
+        // ── Condition TRUE: advance pending → fire ───────────────────────────
         foreach ($matchingIds as $deviceId) {
             if (! isset($devices[$deviceId])) continue;
-            if ($activeAlerts->has($deviceId)) continue; // already active
 
-            \DB::table('alerts')->updateOrInsert(
-                ['rule_id' => $rule->id, 'device_id' => $deviceId],
-                ['state' => 1, 'open' => 1, 'alerted' => 0, 'note' => '', 'info' => json_encode([])]
-            );
-            \DB::table('alert_log')->insert([
-                'rule_id'    => $rule->id,
-                'device_id'  => $deviceId,
-                'state'      => 1,
-                'details'    => json_encode(['rule' => $rule->name]),
-                'time_logged'=> $now,
-            ]);
-            $fired++;
+            $alert = $existingAlerts->get($deviceId);
+
+            // Already actively firing — nothing to do
+            if ($alert && in_array($alert->state, [1, 2, 3])) continue;
+
+            if ($alert && $alert->state === -1) {
+                // Accumulate consecutive confirmations
+                $newCount   = (int) $alert->pending_count + 1;
+                $lastChange = \Carbon\Carbon::parse($alert->last_change);
+                $readyCount = $newCount >= $confirmCount;
+                $readyDelay = $delayMin === 0 || $now->diffInMinutes($lastChange) >= $delayMin;
+
+                if ($readyCount && $readyDelay) {
+                    \DB::table('alerts')
+                        ->where('rule_id', $rule->id)
+                        ->where('device_id', $deviceId)
+                        ->update(['state' => 1, 'open' => 1, 'alerted' => 0,
+                                  'pending_count' => $newCount]);
+                    \DB::table('alert_log')->insert([
+                        'rule_id'    => $rule->id,
+                        'device_id'  => $deviceId,
+                        'state'      => 1,
+                        'details'    => json_encode([
+                            'rule'    => $rule->name,
+                            'confirms'=> $newCount,
+                            'delay'   => $delayMin,
+                        ]),
+                        'time_logged' => $now,
+                    ]);
+                    $fired++;
+                } else {
+                    // Not ready yet — just bump the counter
+                    \DB::table('alerts')
+                        ->where('rule_id', $rule->id)
+                        ->where('device_id', $deviceId)
+                        ->update(['pending_count' => $newCount]);
+                }
+            } else {
+                // First detection — enter pending state (or fire immediately if no threshold)
+                $immediatelyFire = ($confirmCount <= 1 && $delayMin <= 0);
+                $newState        = $immediatelyFire ? 1 : -1;
+
+                \DB::table('alerts')->updateOrInsert(
+                    ['rule_id' => $rule->id, 'device_id' => $deviceId],
+                    [
+                        'state'         => $newState,
+                        'open'          => $immediatelyFire ? 1 : 0,
+                        'alerted'       => 0,
+                        'note'          => '',
+                        'info'          => json_encode([]),
+                        'pending_count' => 1,
+                        'last_change'   => $now,
+                    ]
+                );
+
+                if ($immediatelyFire) {
+                    \DB::table('alert_log')->insert([
+                        'rule_id'    => $rule->id,
+                        'device_id'  => $deviceId,
+                        'state'      => 1,
+                        'details'    => json_encode(['rule' => $rule->name]),
+                        'time_logged' => $now,
+                    ]);
+                    $fired++;
+                }
+            }
         }
 
-        // Clear alerts where condition no longer holds
-        foreach ($activeAlerts as $deviceId => $alert) {
+        // ── Condition FALSE: clear active or reset pending ───────────────────
+        foreach ($existingAlerts as $deviceId => $alert) {
             if ($matchingIds->contains($deviceId)) continue;
+
+            $wasActive = in_array($alert->state, [1, 2, 3]);
 
             \DB::table('alerts')
                 ->where('rule_id', $rule->id)
                 ->where('device_id', $deviceId)
-                ->update(['state' => 0, 'open' => 0]);
-            \DB::table('alert_log')->insert([
-                'rule_id'    => $rule->id,
-                'device_id'  => $deviceId,
-                'state'      => 0,
-                'details'    => json_encode(['rule' => $rule->name, 'cleared' => true]),
-                'time_logged'=> $now,
-            ]);
-            $cleared++;
+                ->update(['state' => 0, 'open' => 0, 'pending_count' => 0]);
+
+            if ($wasActive) {
+                \DB::table('alert_log')->insert([
+                    'rule_id'    => $rule->id,
+                    'device_id'  => $deviceId,
+                    'state'      => 0,
+                    'details'    => json_encode(['rule' => $rule->name, 'cleared' => true]),
+                    'time_logged' => $now,
+                ]);
+                $cleared++;
+            }
         }
     }
 
@@ -271,6 +325,181 @@ Artisan::command('scan
     return $scan_process->getExitCode();
 })->purpose(__('Scan the network for hosts and try to add them to UpdiveNSM'));
 
+Artisan::command('poller:flap', function (): void {
+    $now            = now();
+    $windowMinutes  = 10;  // look-back window for counting changes
+    $flapThreshold  = 3;   // min changes within window to be "flapping"
+    $stableMinutes  = 15;  // no changes for this long → no longer flapping
+    $keepDays       = 1;   // keep port_state_changes history for N days
+
+    // Load all admin-up ports on non-ignored devices
+    $ports = \DB::table('ports')
+        ->join('devices', 'devices.device_id', '=', 'ports.device_id')
+        ->where('devices.ignore', 0)
+        ->where('ports.ifAdminStatus', 'up')
+        ->select('ports.port_id', 'ports.device_id', 'ports.ifName',
+                 'ports.ifOperStatus', 'ports.flapping')
+        ->get();
+
+    if ($ports->isEmpty()) {
+        $this->info('Flap: no admin-up ports found.');
+        return;
+    }
+
+    $portIds = $ports->pluck('port_id');
+
+    // Latest known recorded state for each port (1 query)
+    $latestByPort = \DB::table('port_state_changes')
+        ->whereIn('port_id', $portIds)
+        ->orderByDesc('changed_at')
+        ->get()
+        ->groupBy('port_id')
+        ->map(fn ($g) => $g->first());
+
+    // Change counts in window (1 query)
+    $windowStart = $now->copy()->subMinutes($windowMinutes);
+    $changeCounts = \DB::table('port_state_changes')
+        ->whereIn('port_id', $portIds)
+        ->where('changed_at', '>=', $windowStart)
+        ->selectRaw('port_id, COUNT(*) as cnt')
+        ->groupBy('port_id')
+        ->pluck('cnt', 'port_id');
+
+    // Most recent change time per port (to determine stability)
+    $lastChangeTimes = \DB::table('port_state_changes')
+        ->whereIn('port_id', $portIds)
+        ->selectRaw('port_id, MAX(changed_at) as last_at')
+        ->groupBy('port_id')
+        ->pluck('last_at', 'port_id');
+
+    $newInserts    = [];
+    $nowFlapping   = [];
+    $noLongerFlap  = [];
+    $newFlap       = 0;
+    $cleared       = 0;
+
+    foreach ($ports as $port) {
+        $latest      = $latestByPort->get($port->port_id);
+        $currentState = $port->ifOperStatus ?? 'unknown';
+
+        // ── Record state change if detected ──────────────────────────────
+        if (! $latest) {
+            // First time seeing this port — record baseline
+            $newInserts[] = [
+                'port_id'    => $port->port_id,
+                'device_id'  => $port->device_id,
+                'from_state' => $currentState,
+                'to_state'   => $currentState,
+                'changed_at' => $now,
+            ];
+        } elseif ($latest->to_state !== $currentState) {
+            // State changed since last record
+            $newInserts[] = [
+                'port_id'    => $port->port_id,
+                'device_id'  => $port->device_id,
+                'from_state' => $latest->to_state,
+                'to_state'   => $currentState,
+                'changed_at' => $now,
+            ];
+        }
+
+        // ── Evaluate flapping ─────────────────────────────────────────────
+        // Count includes any new change we just added
+        $countInWindow  = (int) ($changeCounts->get($port->port_id, 0));
+        $hasNewChange   = isset($newInserts[count($newInserts) - 1])
+                          && $newInserts[count($newInserts) - 1]['port_id'] === $port->port_id
+                          && $latest !== null; // not baseline
+        if ($hasNewChange) $countInWindow++;
+
+        $lastChangeAt   = $lastChangeTimes->get($port->port_id);
+        $minutesSinceChange = $lastChangeAt
+            ? $now->diffInMinutes(\Carbon\Carbon::parse($lastChangeAt))
+            : $stableMinutes + 1;
+
+        // Flapping: enough changes in window
+        // Stable: no change recently even if it was flapping before
+        $isFlapping = ($countInWindow >= $flapThreshold)
+                   && ($minutesSinceChange < $stableMinutes);
+
+        if ($isFlapping) {
+            $nowFlapping[] = $port->port_id;
+            if (! $port->flapping) $newFlap++;
+        } else {
+            if ($port->flapping) $noLongerFlap[] = $port;
+        }
+    }
+
+    // ── Bulk insert new state changes ────────────────────────────────────
+    if ($newInserts) {
+        \DB::table('port_state_changes')->insert($newInserts);
+    }
+
+    // ── Update flapping flag on ports ────────────────────────────────────
+    if ($nowFlapping) {
+        \DB::table('ports')->whereIn('port_id', $nowFlapping)
+            ->update(['flapping' => 1]);
+    }
+    foreach ($noLongerFlap as $port) {
+        \DB::table('ports')->where('port_id', $port->port_id)
+            ->update(['flapping' => 0]);
+
+        // If no other ports on that device still flapping → clear the alert
+        $stillFlapping = \DB::table('ports')
+            ->where('device_id', $port->device_id)
+            ->where('flapping', 1)
+            ->where('port_id', '!=', $port->port_id)
+            ->exists();
+
+        if (! $stillFlapping) {
+            $flapRule = \DB::table('alert_rules')->where('name', 'Port Flapping')->value('id');
+            if ($flapRule) {
+                \DB::table('alerts')
+                    ->where('rule_id', $flapRule)
+                    ->where('device_id', $port->device_id)
+                    ->whereIn('state', [-1, 1, 2, 3])
+                    ->update(['state' => 0, 'open' => 0, 'pending_count' => 0]);
+            }
+        }
+        $cleared++;
+    }
+
+    // ── Prune old records ─────────────────────────────────────────────────
+    \DB::table('port_state_changes')
+        ->where('changed_at', '<', $now->copy()->subDays($keepDays))
+        ->delete();
+
+    $this->info("Flap: {$newFlap} new, " . count($nowFlapping) . " ongoing, {$cleared} cleared.");
+})->purpose('Detect port flapping (rapid up/down state changes)');
+
+Artisan::command('poller:status', function (): void {
+    $pending    = \DB::table('jobs')->where('queue', 'poller')->whereNull('reserved_at')->count();
+    $processing = \DB::table('jobs')->where('queue', 'poller')->whereNotNull('reserved_at')->count();
+    $failed     = \DB::table('failed_jobs')->where('queue', 'poller')->count();
+    $total      = \App\Models\Device::where('ignore', 0)->count();
+
+    $lastPoll = \DB::table('devices')
+        ->where('ignore', 0)
+        ->whereNotNull('last_polled')
+        ->max('last_polled');
+
+    $oldestUnpolled = \DB::table('devices')
+        ->where('ignore', 0)
+        ->whereNotNull('last_polled')
+        ->min('last_polled');
+
+    $this->table(
+        ['Metric', 'Value'],
+        [
+            ['Total devices',  $total],
+            ['Queue: pending', $pending],
+            ['Queue: running', $processing],
+            ['Failed jobs',    $failed],
+            ['Last poll completed', $lastPoll ?? 'never'],
+            ['Oldest last-poll',   $oldestUnpolled ?? 'never'],
+        ]
+    );
+})->purpose('Show parallel poller queue status');
+
 // mark schedule working
 Schedule::call(function (): void {
     Cache::put('scheduler_working', now(), now()->addMinutes(6));
@@ -317,9 +546,8 @@ Schedule::command(MaintenanceRefreshSslCertificates::class)
     ->appendOutputTo($maintenance_log_file)
     ->onFailure(fn () => Eventlog::log('The scheduled command maintenance:refresh-ssl-certificates failed to run. Check the maintenance.log for details.', null, 'maintenance', Severity::Error));
 
-Schedule::command('device:poll all')
+Schedule::command('device:poll all --dispatch')
     ->everyFiveMinutes()
-    ->withoutOverlapping(5)
     ->runInBackground();
 
 Schedule::command('device:discover all')
@@ -332,7 +560,36 @@ Schedule::command('metrics:collect')
     ->withoutOverlapping(4)
     ->runInBackground();
 
+Schedule::command('metrics:aggregate')
+    ->hourly()
+    ->withoutOverlapping(55)
+    ->runInBackground();
+
+Schedule::command('metrics:partition --months=3')
+    ->monthlyOn(1, '02:00')
+    ->runInBackground();
+
+Schedule::command('metrics:baseline')
+    ->hourly()
+    ->withoutOverlapping(50)
+    ->runInBackground();
+
+Schedule::command('metrics:anomaly')
+    ->everyFifteenMinutes()
+    ->withoutOverlapping(10)
+    ->runInBackground();
+
+Schedule::command('metrics:forecast')
+    ->hourlyAt(30)
+    ->withoutOverlapping(50)
+    ->runInBackground();
+
 Schedule::command('poller:alerts')
+    ->everyMinute()
+    ->withoutOverlapping(1)
+    ->runInBackground();
+
+Schedule::command('poller:flap')
     ->everyMinute()
     ->withoutOverlapping(1)
     ->runInBackground();

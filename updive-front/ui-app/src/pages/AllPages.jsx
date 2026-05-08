@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { StatCard, Badge, Icon, TableCard, PageHeader, TD, BarChartSVG, MiniAreaSVG } from '../components/Charts';
-import { getDevices, getAlerts, getPorts, getLogs, getServices, getPollers, getPollerLog, getPollerGroups, getBgp, getSystemInfo, addDevice, deleteDevice, updateDevice, invalidateCache } from '../api';
+import { getDevices, getAlerts, getPorts, getLogs, getServices, getPollers, getPollerLog, getPollerGroups, getBgp, getSystemInfo, addDevice, deleteDevice, updateDevice, invalidateCache, snmpCheck } from '../api';
 
 // ─── FORM HELPERS ─────────────────────────────────────────────────
 const F = {
@@ -15,35 +15,69 @@ const F = {
 const BLANK = { hostname: '', snmpver: 'v2c', community: 'public', port: '161', transport: 'udp', force_add: false, ping_fallback: false, snmp_disable: false, os: '', authlevel: 'noAuthNoPriv', authname: '', authpass: '', authalgo: 'MD5', cryptopass: '', cryptoalgo: 'AES' };
 
 // ─── ADD DEVICE MODAL ─────────────────────────────────────────────
-const AddDeviceModal = ({ accent, onClose, onAdded }) => {
-  const [form,    setForm]    = useState(BLANK);
-  const [loading, setLoading] = useState(false);
-  const [error,   setError]   = useState('');
-  const [success, setSuccess] = useState('');
+// ─── SNMP Wizard Step Row ─────────────────────────────────────────
+const WizardStep = ({ step, ok, msg, running }) => {
+  const icon = running ? '⏳' : ok ? '✅' : '❌';
+  const color = running ? '#f59e0b' : ok ? '#16a34a' : '#dc2626';
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '7px 0', borderBottom: '1px solid #f9fafb' }}>
+      <span style={{ fontSize: 14, minWidth: 20 }}>{icon}</span>
+      <div style={{ flex: 1 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: '#111827' }}>{step}</div>
+        {msg && <div style={{ fontSize: 11, color, marginTop: 2 }}>{msg}</div>}
+      </div>
+    </div>
+  );
+};
 
-  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+const AddDeviceModal = ({ accent, onClose, onAdded }) => {
+  const [form,       setForm]      = useState(BLANK);
+  const [loading,    setLoading]   = useState(false);
+  const [error,      setError]     = useState('');
+  const [success,    setSuccess]   = useState('');
+  const [checking,   setChecking]  = useState(false);
+  const [wizSteps,   setWizSteps]  = useState(null);  // null = not run yet
+
+  const set = (k, v) => { setForm(f => ({ ...f, [k]: v })); setWizSteps(null); };
+
+  const buildBody = () => {
+    const body = { hostname: form.hostname.trim(), port: Number(form.port) || 161, transport: form.transport, force_add: form.force_add, ping_fallback: form.ping_fallback };
+    if (form.snmp_disable) {
+      body.snmp_disable = true;
+      body.os = form.os || 'ping';
+    } else {
+      body.snmpver = form.snmpver;
+      if (form.snmpver === 'v1' || form.snmpver === 'v2c') {
+        body.community = form.community;
+      } else {
+        body.authlevel  = form.authlevel;
+        body.authname   = form.authname;
+        body.authpass   = form.authpass;
+        body.authalgo   = form.authalgo;
+        if (form.authlevel === 'authPriv') { body.cryptopass = form.cryptopass; body.cryptoalgo = form.cryptoalgo; }
+      }
+    }
+    return body;
+  };
+
+  const testConnection = async () => {
+    if (!form.hostname.trim()) { setError('Hostname or IP is required'); return; }
+    setChecking(true); setWizSteps([]); setError('');
+    try {
+      const res = await snmpCheck(buildBody());
+      setWizSteps(res.steps ?? []);
+    } catch (e) {
+      setError(e.response?.data?.message || e.message || 'Check failed');
+      setWizSteps(null);
+    }
+    setChecking(false);
+  };
 
   const submit = async () => {
     if (!form.hostname.trim()) { setError('Hostname or IP is required'); return; }
     setLoading(true); setError(''); setSuccess('');
     try {
-      const body = { hostname: form.hostname.trim(), port: Number(form.port) || 161, transport: form.transport, force_add: form.force_add, ping_fallback: form.ping_fallback };
-      if (form.snmp_disable) {
-        body.snmp_disable = true;
-        body.os = form.os || 'ping';
-      } else {
-        body.snmpver = form.snmpver;
-        if (form.snmpver === 'v1' || form.snmpver === 'v2c') {
-          body.community = form.community;
-        } else {
-          body.authlevel  = form.authlevel;
-          body.authname   = form.authname;
-          body.authpass   = form.authpass;
-          body.authalgo   = form.authalgo;
-          if (form.authlevel === 'authPriv') { body.cryptopass = form.cryptopass; body.cryptoalgo = form.cryptoalgo; }
-        }
-      }
-      const res = await addDevice(body);
+      const res = await addDevice(buildBody());
       if (res.status === 'ok') {
         setSuccess(res.message || 'Device added successfully');
         invalidateCache('devices');
@@ -193,18 +227,45 @@ const AddDeviceModal = ({ accent, onClose, onAdded }) => {
             </>
           )}
 
-          {error   && <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 7, padding: '8px 12px', fontSize: 11, color: '#dc2626', marginTop: 4 }}>{error}</div>}
-          {success && <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 7, padding: '8px 12px', fontSize: 11, color: '#16a34a', marginTop: 4 }}>{success}</div>}
+          {/* Wizard results panel */}
+          {(checking || wizSteps !== null) && (
+            <div style={{ marginTop: 16, background: '#f9fafb', border: '1px solid #e8ecf0', borderRadius: 8, padding: '12px 14px' }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>
+                Connection Diagnostics
+              </div>
+              {checking && wizSteps?.length === 0 && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#9ca3af', fontSize: 12 }}>
+                  <div style={{ width: 14, height: 14, border: '2px solid #e5e7eb', borderTopColor: '#6b7280', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+                  Running diagnostics...
+                </div>
+              )}
+              {(wizSteps ?? []).map((s, i) => (
+                <WizardStep key={i} step={s.step} ok={s.ok} msg={s.msg} running={false} />
+              ))}
+            </div>
+          )}
+
+          {error   && <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 7, padding: '8px 12px', fontSize: 11, color: '#dc2626', marginTop: 8 }}>{error}</div>}
+          {success && <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 7, padding: '8px 12px', fontSize: 11, color: '#16a34a', marginTop: 8 }}>{success}</div>}
         </div>
 
         {/* Footer */}
-        <div style={{ padding: '14px 20px', borderTop: '1px solid #f0f2f5', display: 'flex', justifyContent: 'flex-end', gap: 8, flexShrink: 0 }}>
-          <button onClick={onClose} style={{ padding: '7px 16px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', fontSize: 12, fontWeight: 500, cursor: 'pointer', fontFamily: 'inherit', color: '#374151' }}>
-            Cancel
+        <div style={{ padding: '14px 20px', borderTop: '1px solid #f0f2f5', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
+          <button onClick={testConnection} disabled={checking || !form.hostname.trim()} style={{
+            padding: '7px 14px', borderRadius: 8, border: '1px solid #d1d5db',
+            background: '#f9fafb', fontSize: 12, fontWeight: 600, cursor: (checking || !form.hostname.trim()) ? 'not-allowed' : 'pointer',
+            fontFamily: 'inherit', color: '#374151', opacity: (checking || !form.hostname.trim()) ? 0.5 : 1,
+          }}>
+            {checking ? '⏳ Testing...' : '🔍 Test Connection'}
           </button>
-          <button onClick={submit} disabled={loading} style={{ padding: '7px 20px', borderRadius: 8, border: 'none', background: loading ? '#9ca3af' : accent, color: '#fff', fontSize: 12, fontWeight: 600, cursor: loading ? 'not-allowed' : 'pointer', fontFamily: 'inherit', minWidth: 100 }}>
-            {loading ? 'Adding...' : 'Add Device'}
-          </button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={onClose} style={{ padding: '7px 16px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', fontSize: 12, fontWeight: 500, cursor: 'pointer', fontFamily: 'inherit', color: '#374151' }}>
+              Cancel
+            </button>
+            <button onClick={submit} disabled={loading} style={{ padding: '7px 20px', borderRadius: 8, border: 'none', background: loading ? '#9ca3af' : accent, color: '#fff', fontSize: 12, fontWeight: 600, cursor: loading ? 'not-allowed' : 'pointer', fontFamily: 'inherit', minWidth: 100 }}>
+              {loading ? 'Adding...' : 'Add Device'}
+            </button>
+          </div>
         </div>
       </div>
     </div>

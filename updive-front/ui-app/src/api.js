@@ -62,6 +62,13 @@ export const getBills        = () => cached('bills',     () => api.get('/bills')
 export const getPortSecurity = () => cached('portsec',   () => api.get('/port_security').then(r => r.data?.port_security ?? []));
 export const getPorts        = () => cached('ports',     () => api.get('/ports', { params: { columns: PORT_COLUMNS } }).then(r => r.data?.ports ?? []));
 export const getDeviceRelationships = () => cached('relationships', () => api.get('/device_relationships').then(r => r.data?.relationships ?? []));
+export const getTopology            = () => api.get('/topology').then(r => r.data);
+
+// ─── Auto-Discovery ───────────────────────────────────────────────
+export const getDiscoveryCandidates = ()           => api.get('/discovery/candidates').then(r => r.data);
+export const getCommunityPool       = ()           => api.get('/discovery/community-pool').then(r => r.data?.pool ?? []);
+export const saveCommunityPool      = (pool)       => api.post('/discovery/community-pool', { pool }).then(r => r.data);
+export const cidrScan               = (params)     => api.post('/discovery/cidr-scan', params).then(r => r.data);
 export const getLogs         = (limit = 50) => cached(`logs:${limit}`, () => api.get('/logs/eventlog', { params: { limit } }).then(r => r.data?.logs ?? []));
 export const getEventLog     = (params = {}) => api.get('/eventlog', { params }).then(r => r.data);
 export const getSystemInfo   = () => api.get('/system').then(r => r.data || {});
@@ -72,6 +79,14 @@ export const getArp          = (query = '0.0.0.0') => api.get(`/resources/ip/arp
 export const addDevice    = (data) => api.post('/devices', data).then(r => r.data);
 export const deleteDevice = (hostname) => api.delete(`/devices/${hostname}`).then(r => r.data);
 export const updateDevice = (hostname, field, data) => api.patch(`/devices/${hostname}`, { field, data }).then(r => r.data);
+
+// ─── SNMP Connection Wizard ───────────────────────────────────────
+export const snmpCheck     = (params)         => api.post('/devices/snmp-check', params).then(r => r.data);
+
+// ─── OS override ──────────────────────────────────────────────────
+export const getOsList     = ()               => api.get('/devices/os-list').then(r => r.data?.os_list ?? []);
+export const setDeviceOs   = (hostname, os)   => api.patch(`/devices/${hostname}/os`, { os }).then(r => r.data);
+export const clearDeviceOs = (hostname)       => api.delete(`/devices/${hostname}/os`).then(r => r.data);
 
 // Per-device (cached by hostname)
 export const getDeviceDetails    = (hostname) => cached(`dev:${hostname}`,       () => api.get(`/devices/${hostname}`).then(r => r.data?.devices?.[0] ?? null));
@@ -150,6 +165,8 @@ export const createAlertRuleV1 = (form) => apiV1.post('/alert-rules', {
   start_disabled:     form.disabled           ?? false,
   invert_device_map:  form.invert_map         ?? false,
   alert_operation_id: form.alert_operation_id ?? null,
+  confirm_count:      form.confirm_count      ?? 1,
+  delay_min:          form.delay_min          ?? 0,
 }).then(r => r.data);
 
 // ═══════════════════════════════════════════════════════════════════
@@ -198,6 +215,16 @@ export const createAlertRuleV2 = (data)        => apiV2.post('/alert-rules',    
 export const updateAlertRuleV2 = (id, data)    => apiV2.put(`/alert-rules/${id}`,   data).then(r => r.data);
 export const deleteAlertRuleV2 = (id)          => apiV2.delete(`/alert-rules/${id}`).then(r => r.data);
 export const toggleAlertRuleV2 = (id)          => apiV2.patch(`/alert-rules/${id}/toggle`).then(r => r.data);
+
+// ─── RBAC ─────────────────────────────────────────────────────────
+export const getRbacRoles       = ()            => apiV2.get('/rbac/roles').then(r => r.data?.roles ?? []);
+export const getRbacRole        = (id)          => apiV2.get(`/rbac/roles/${id}`).then(r => r.data?.role);
+export const createRbacRole     = (data)        => apiV2.post('/rbac/roles', data).then(r => r.data);
+export const updateRbacRole     = (id, perms)   => apiV2.put(`/rbac/roles/${id}`, { permissions: perms }).then(r => r.data);
+export const deleteRbacRole     = (id)          => apiV2.delete(`/rbac/roles/${id}`).then(r => r.data);
+export const getRbacPermissions = ()            => apiV2.get('/rbac/permissions').then(r => r.data?.permissions ?? {});
+export const getRbacUsers       = ()            => apiV2.get('/rbac/users').then(r => r.data?.users ?? []);
+export const assignUserRoles    = (id, roles)   => apiV2.patch(`/rbac/users/${id}/roles`, { roles }).then(r => r.data);
 
 // ─── Alert Transports ─────────────────────────────────────────────
 export const getTransportsV2    = ()            => apiV2.get('/alert-transports').then(r => r.data?.transports ?? []);

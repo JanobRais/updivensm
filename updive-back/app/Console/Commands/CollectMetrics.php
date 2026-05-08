@@ -7,7 +7,7 @@ use Illuminate\Support\Facades\DB;
 
 class CollectMetrics extends Command
 {
-    protected $signature   = 'metrics:collect {--prune=90 : Days of history to keep}';
+    protected $signature   = 'metrics:collect {--prune=2 : Days of raw history to keep before aggregate takes over}';
     protected $description = 'Snapshot current device metrics into updive_metrics table';
 
     public function handle(): int
@@ -22,8 +22,8 @@ class CollectMetrics extends Command
             ->get();
 
         foreach ($ports as $p) {
-            $rows[] = ['device_id' => $p->device_id, 'metric_type' => 'port_in',  'object_id' => $p->port_id, 'object_name' => $p->ifName, 'value' => $p->ifInOctets_rate,  'unit' => 'Bps', 'collected_at' => $now];
-            $rows[] = ['device_id' => $p->device_id, 'metric_type' => 'port_out', 'object_id' => $p->port_id, 'object_name' => $p->ifName, 'value' => $p->ifOutOctets_rate ?? 0, 'unit' => 'Bps', 'collected_at' => $now];
+            $rows[] = ['device_id' => $p->device_id, 'metric_type' => 'port_in',  'object_id' => $p->port_id, 'object_name' => $p->ifName, 'value' => $p->ifInOctets_rate,  'unit' => 'Bps', 'collected_at' => $now, 'resolution' => 'raw'];
+            $rows[] = ['device_id' => $p->device_id, 'metric_type' => 'port_out', 'object_id' => $p->port_id, 'object_name' => $p->ifName, 'value' => $p->ifOutOctets_rate ?? 0, 'unit' => 'Bps', 'collected_at' => $now, 'resolution' => 'raw'];
         }
 
         // ── CPU ───────────────────────────────────────────────────────────
@@ -33,7 +33,7 @@ class CollectMetrics extends Command
             ->get();
 
         foreach ($procs as $p) {
-            $rows[] = ['device_id' => $p->device_id, 'metric_type' => 'cpu', 'object_id' => $p->processor_id, 'object_name' => $p->processor_descr, 'value' => $p->processor_usage, 'unit' => '%', 'collected_at' => $now];
+            $rows[] = ['device_id' => $p->device_id, 'metric_type' => 'cpu', 'object_id' => $p->processor_id, 'object_name' => $p->processor_descr, 'value' => $p->processor_usage, 'unit' => '%', 'collected_at' => $now, 'resolution' => 'raw'];
         }
 
         // ── Memory ────────────────────────────────────────────────────────
@@ -44,7 +44,7 @@ class CollectMetrics extends Command
             ->get();
 
         foreach ($mems as $m) {
-            $rows[] = ['device_id' => $m->device_id, 'metric_type' => 'mem', 'object_id' => $m->mempool_id, 'object_name' => $m->mempool_descr, 'value' => $m->mempool_perc, 'unit' => '%', 'collected_at' => $now];
+            $rows[] = ['device_id' => $m->device_id, 'metric_type' => 'mem', 'object_id' => $m->mempool_id, 'object_name' => $m->mempool_descr, 'value' => $m->mempool_perc, 'unit' => '%', 'collected_at' => $now, 'resolution' => 'raw'];
         }
 
         // ── Uptime ────────────────────────────────────────────────────────
@@ -55,7 +55,7 @@ class CollectMetrics extends Command
             ->get();
 
         foreach ($devs as $d) {
-            $rows[] = ['device_id' => $d->device_id, 'metric_type' => 'uptime', 'object_id' => $d->device_id, 'object_name' => null, 'value' => $d->uptime, 'unit' => 's', 'collected_at' => $now];
+            $rows[] = ['device_id' => $d->device_id, 'metric_type' => 'uptime', 'object_id' => $d->device_id, 'object_name' => null, 'value' => $d->uptime, 'unit' => 's', 'collected_at' => $now, 'resolution' => 'raw'];
         }
 
         // ── Bulk insert ───────────────────────────────────────────────────
@@ -63,9 +63,10 @@ class CollectMetrics extends Command
             DB::table('updive_metrics')->insert($chunk);
         }
 
-        // ── Prune old rows ────────────────────────────────────────────────
+        // ── Emergency prune: raw rows only (aggregate job handles rotation normally) ──
         $days    = (int) $this->option('prune');
         $deleted = DB::table('updive_metrics')
+            ->where('resolution', 'raw')
             ->where('collected_at', '<', now()->subDays($days))
             ->delete();
 

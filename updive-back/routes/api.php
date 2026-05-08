@@ -26,6 +26,104 @@ Route::prefix('v0')->group(function (): void {
         return response()->json(['relationships' => $rows]);
     });
 
+    // ── Topology (nodes + edges for network map) ──────────────────
+    Route::get('topology', function () {
+        // Nodes: all devices
+        $devices = \DB::table('devices')
+            ->select('device_id', 'hostname', 'sysName', 'display', 'status', 'type', 'os', 'location_id', 'uptime')
+            ->where('ignore', 0)
+            ->get();
+
+        // Port rates for node traffic info
+        $portRates = \DB::table('ports')
+            ->select('device_id',
+                \DB::raw('SUM(ifInOctets_rate)  as total_in'),
+                \DB::raw('SUM(ifOutOctets_rate) as total_out'),
+                \DB::raw('SUM(CASE WHEN ifOperStatus="up" THEN 1 ELSE 0 END) as ports_up'),
+                \DB::raw('COUNT(*) as ports_total'))
+            ->whereNotNull('ifInOctets_rate')
+            ->groupBy('device_id')
+            ->get()
+            ->keyBy('device_id');
+
+        $nodes = $devices->map(function ($d) use ($portRates) {
+            $pr    = $portRates->get($d->device_id);
+            $label = $d->display ?: $d->sysName ?: $d->hostname;
+            return [
+                'id'          => (string) $d->device_id,
+                'label'       => $label,
+                'hostname'    => $d->hostname,
+                'status'      => (int) $d->status,
+                'type'        => $d->type   ?? 'unknown',
+                'os'          => $d->os     ?? 'generic',
+                'uptime'      => $d->uptime,
+                'traffic_in'  => $pr ? (int) $pr->total_in  : 0,
+                'traffic_out' => $pr ? (int) $pr->total_out : 0,
+                'ports_up'    => $pr ? (int) $pr->ports_up  : 0,
+                'ports_total' => $pr ? (int) $pr->ports_total : 0,
+            ];
+        })->values();
+
+        // Edges: LLDP links (deduplicated — keep one direction per pair)
+        $links = \DB::table('links')
+            ->where('active', 1)
+            ->whereNotNull('remote_device_id')
+            ->where('remote_device_id', '>', 0)
+            ->select('local_device_id', 'remote_device_id', 'protocol',
+                     'remote_port', 'remote_platform')
+            ->get();
+
+        $seen  = [];
+        $edges = [];
+        foreach ($links as $lk) {
+            $a   = min($lk->local_device_id, $lk->remote_device_id);
+            $b   = max($lk->local_device_id, $lk->remote_device_id);
+            $key = "{$a}-{$b}";
+            if (isset($seen[$key])) {
+                // Count parallel links for edge thickness
+                $seen[$key]++;
+                continue;
+            }
+            $seen[$key] = 1;
+            $edges[] = [
+                'id'       => $key,
+                'source'   => (string) $lk->local_device_id,
+                'target'   => (string) $lk->remote_device_id,
+                'protocol' => $lk->protocol ?? 'lldp',
+                'port'     => $lk->remote_port,
+                'count'    => 1,
+            ];
+        }
+        // Set parallel link counts
+        foreach ($edges as &$e) {
+            $e['count'] = $seen[$e['id']] ?? 1;
+        }
+        unset($e);
+
+        // Also add device_relationships as edges (if no LLDP)
+        if (empty($edges)) {
+            $rels = \DB::table('device_relationships')->get();
+            foreach ($rels as $r) {
+                $a = min($r->parent_device_id, $r->child_device_id);
+                $b = max($r->parent_device_id, $r->child_device_id);
+                $edges[] = [
+                    'id'       => "{$a}-{$b}",
+                    'source'   => (string) $r->parent_device_id,
+                    'target'   => (string) $r->child_device_id,
+                    'protocol' => 'hierarchy',
+                    'port'     => null,
+                    'count'    => 1,
+                ];
+            }
+        }
+
+        return response()->json([
+            'status' => 'ok',
+            'nodes'  => $nodes,
+            'edges'  => $edges,
+        ]);
+    });
+
     // ── Services CRUD ─────────────────────────────────────────────
     Route::middleware(['can:admin'])->prefix('services')->group(function (): void {
         Route::post('', function (\Illuminate\Http\Request $req) {
@@ -98,6 +196,191 @@ Route::prefix('v0')->group(function (): void {
             'per_page' => $perPage,
             'pages'    => (int) ceil($total / $perPage),
         ]);
+    });
+
+    // ── SNMP Connection Wizard ────────────────────────────────────
+    Route::post('devices/snmp-check', function (\Illuminate\Http\Request $req) {
+        $req->validate(['hostname' => 'required|string|max:253']);
+
+        $host      = trim($req->input('hostname'));
+        $port      = (int) $req->input('port', 161);
+        $snmpver   = $req->input('snmpver', 'v2c');
+        $transport = $req->input('transport', 'udp');
+        $community = $req->input('community', 'public');
+
+        // SNMPv3 params
+        $authlevel  = $req->input('authlevel',  'noAuthNoPriv');
+        $authname   = $req->input('authname',   '');
+        $authpass   = $req->input('authpass',   '');
+        $authalgo   = $req->input('authalgo',   'MD5');
+        $cryptopass = $req->input('cryptopass', '');
+        $cryptoalgo = $req->input('cryptoalgo', 'AES');
+
+        $steps = [];
+
+        $run = function (string $cmd): array {
+            exec($cmd . ' 2>&1', $out, $code);
+            return ['output' => implode("\n", $out), 'code' => $code];
+        };
+
+        // ── Step 1: Ping ──────────────────────────────────────────
+        $r = $run('fping -c 1 -t 2000 ' . escapeshellarg($host));
+        $pingOk = $r['code'] === 0;
+        $steps[] = [
+            'step' => 'Ping',
+            'ok'   => $pingOk,
+            'msg'  => $pingOk ? 'Host is reachable' : 'No ping response — host may be down or ICMP blocked',
+        ];
+
+        // ── Step 2: SNMP port reachable (send with bad community) ─
+        $snmpTarget = escapeshellarg("{$transport}:{$host}/{$port}");
+        $portProbe  = $run("snmpget -v2c -c invalid_xyz_probe -r 0 -t 3 {$snmpTarget} SNMPv2-MIB::sysDescr.0");
+        $portOpen   = str_contains($portProbe['output'], 'Authentication') ||
+                      str_contains($portProbe['output'], 'sysDescr') ||
+                      str_contains($portProbe['output'], 'STRING');
+        $steps[] = [
+            'step' => 'UDP Port 161',
+            'ok'   => $portOpen,
+            'msg'  => $portOpen ? 'SNMP port is open and responding' : 'No response on UDP 161 — port may be closed or filtered',
+        ];
+
+        if (! $portOpen) {
+            return response()->json(['status' => 'ok', 'steps' => $steps]);
+        }
+
+        // ── Step 3: SNMP auth ─────────────────────────────────────
+        if ($snmpver === 'v2c' || $snmpver === 'v1') {
+            $ver = $snmpver === 'v1' ? '1' : '2c';
+            $r   = $run("snmpget -v{$ver} -c " . escapeshellarg($community) . " -r 1 -t 5 {$snmpTarget} SNMPv2-MIB::sysDescr.0");
+            $authOk  = str_contains($r['output'], 'STRING') || str_contains($r['output'], 'sysDescr');
+            $authMsg = $authOk
+                ? "Community '{$community}' accepted"
+                : (str_contains($r['output'], 'Authentication') ? "Wrong community string" : "SNMP query timed out");
+            $steps[] = ['step' => 'SNMP Community', 'ok' => $authOk, 'msg' => $authMsg];
+
+            if (! $authOk) {
+                return response()->json(['status' => 'ok', 'steps' => $steps]);
+            }
+
+            // ── Step 4: sysDescr ─────────────────────────────────
+            preg_match('/STRING:\s*(.+)$/', $r['output'], $m);
+            $sysDescr = isset($m[1]) ? trim($m[1]) : null;
+            $steps[] = [
+                'step' => 'sysDescr',
+                'ok'   => (bool) $sysDescr,
+                'msg'  => $sysDescr ?? 'Could not retrieve sysDescr',
+            ];
+
+            // ── Step 5: sysObjectID + OS detection ────────────────
+            $r2 = $run("snmpget -v{$ver} -c " . escapeshellarg($community) . " -r 1 -t 5 {$snmpTarget} SNMPv2-MIB::sysObjectID.0 --numeric");
+            preg_match('/OID:\s*(.+)$/', $r2['output'], $m2);
+            $sysObjectID = isset($m2[1]) ? trim($m2[1]) : null;
+
+            $detectedOs = null;
+            if ($sysObjectID) {
+                $mapFile = base_path('resources/definitions/vendor_oid_map.yaml');
+                if (file_exists($mapFile)) {
+                    $map = \Symfony\Component\Yaml\Yaml::parseFile($mapFile);
+                    foreach ((array) $map as $prefix => $os) {
+                        if (str_starts_with($sysObjectID, (string) $prefix)) {
+                            $detectedOs = $os;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            $steps[] = [
+                'step' => 'OS Detection',
+                'ok'   => (bool) $detectedOs,
+                'msg'  => $detectedOs ? "Detected: {$detectedOs}" : "OS not recognized (will use 'generic')",
+                'data' => ['sysObjectID' => $sysObjectID, 'os' => $detectedOs],
+            ];
+
+        } else {
+            // SNMPv3
+            $sec  = escapeshellarg($authname);
+            $lvl  = escapeshellarg($authlevel);
+            $ap   = escapeshellarg($authpass);
+            $aa   = escapeshellarg($authalgo);
+            $cp   = escapeshellarg($cryptopass);
+            $ca   = escapeshellarg($cryptoalgo);
+
+            if ($authlevel === 'noAuthNoPriv') {
+                $v3cmd = "snmpget -v3 -l {$lvl} -u {$sec} -r 1 -t 5 {$snmpTarget} SNMPv2-MIB::sysDescr.0";
+            } elseif ($authlevel === 'authNoPriv') {
+                $v3cmd = "snmpget -v3 -l {$lvl} -u {$sec} -a {$aa} -A {$ap} -r 1 -t 5 {$snmpTarget} SNMPv2-MIB::sysDescr.0";
+            } else {
+                $v3cmd = "snmpget -v3 -l {$lvl} -u {$sec} -a {$aa} -A {$ap} -x {$ca} -X {$cp} -r 1 -t 5 {$snmpTarget} SNMPv2-MIB::sysDescr.0";
+            }
+
+            $r      = $run($v3cmd);
+            $authOk = str_contains($r['output'], 'STRING') || str_contains($r['output'], 'sysDescr');
+            $steps[] = [
+                'step' => 'SNMPv3 Auth',
+                'ok'   => $authOk,
+                'msg'  => $authOk ? "SNMPv3 authentication successful" : "SNMPv3 auth failed: " . trim(explode("\n", $r['output'])[0] ?? ''),
+            ];
+
+            if ($authOk) {
+                preg_match('/STRING:\s*(.+)$/', $r['output'], $m);
+                $sysDescr = isset($m[1]) ? trim($m[1]) : null;
+                $steps[]  = ['step' => 'sysDescr', 'ok' => (bool) $sysDescr, 'msg' => $sysDescr ?? 'Could not retrieve sysDescr'];
+            }
+        }
+
+        return response()->json(['status' => 'ok', 'steps' => $steps]);
+    });
+
+    // ── Device list (cached, 5 min) ───────────────────────────────
+    Route::get('devices', function (\Illuminate\Http\Request $req) {
+        // Skip cache if filtering parameters are present
+        if ($req->hasAny(['hostname', 'sysName', 'type', 'os', 'group', 'ip'])) {
+            // Fall through to legacy handler by returning null — handled below
+            return null;
+        }
+        $devices = \Cache::remember('device_list', 300, function () {
+            return \DB::table('devices')
+                ->select([
+                    'device_id','hostname','sysName','display','ip','os','hardware','version',
+                    'serial','type','purpose','status','uptime','last_polled','last_discovered',
+                    'ignore','disabled','location_id','community','snmpver','os_forced',
+                ])
+                ->orderBy('hostname')
+                ->get();
+        });
+        return response()->json(['status' => 'ok', 'count' => $devices->count(), 'devices' => $devices]);
+    });
+
+    // OS override endpoints
+    Route::get('devices/os-list', function () {
+        $files = glob(base_path('resources/definitions/os_detection/*.yaml'));
+        $names = array_map(fn ($f) => pathinfo($f, PATHINFO_FILENAME), $files ?? []);
+        sort($names);
+        return response()->json(['status' => 'ok', 'os_list' => $names]);
+    });
+
+    Route::patch('devices/{hostname}/os', function ($hostname, \Illuminate\Http\Request $req) {
+        $req->validate([
+            'os'        => 'required|string|max:100',
+            'os_forced' => 'boolean',
+        ]);
+        $device = \App\Models\Device::where('hostname', $hostname)
+            ->orWhere('ip', $hostname)->firstOrFail();
+        $device->os        = trim($req->input('os'));
+        $device->os_forced = $req->boolean('os_forced', true);
+        $device->save();
+        \Cache::forget('device_list');
+        return response()->json(['status' => 'ok', 'os' => $device->os, 'os_forced' => (bool) $device->os_forced]);
+    });
+
+    Route::delete('devices/{hostname}/os', function ($hostname) {
+        $device = \App\Models\Device::where('hostname', $hostname)
+            ->orWhere('ip', $hostname)->firstOrFail();
+        $device->os_forced = 0;
+        $device->save();
+        \Cache::forget('device_list');
+        return response()->json(['status' => 'ok', 'message' => 'OS lock removed; will be re-detected on next discovery.']);
     });
 
     // Device sub-resource data endpoints (not in legacy API)
@@ -182,69 +465,62 @@ Route::prefix('v0')->group(function (): void {
             return response()->json(['status' => 'ok', 'objects' => $q->orderBy('object_name')->get()]);
         });
 
-        // GET /api/v0/metrics?device_id=1&metric_type=cpu&object_id=1&from=2026-04-01&to=2026-05-04&resolution=auto
+        // GET /api/v0/metrics?device_id=1&metric_type=cpu&object_id=1&from=...&to=...&resolution=auto
         Route::get('metrics', function (\Illuminate\Http\Request $req) {
             $from       = $req->input('from', now()->subHours(6)->toDateTimeString());
             $to         = $req->input('to',   now()->toDateTimeString());
             $resolution = $req->input('resolution', 'auto');
             $limit      = min((int) $req->input('limit', 2000), 10000);
 
+            $diffHours  = (strtotime($to) - strtotime($from)) / 3600;
+
+            // Auto-select best resolution: prefer pre-aggregated rows, fall back to on-the-fly
+            if ($resolution === 'auto') {
+                if ($diffHours > 24 * 7)   $resolution = 'day';
+                elseif ($diffHours > 24)   $resolution = 'hour';
+                else                       $resolution = 'raw';
+            }
+
+            // Map requested resolution to table resolution column value
+            $resMap = ['raw' => 'raw', 'hour' => '1h', 'day' => '1d'];
+            $dbResolution = $resMap[$resolution] ?? 'raw';
+
+            // Base query using the pre-aggregated resolution column (fast index scan)
             $q = \DB::table('updive_metrics')
-                ->whereBetween('collected_at', [$from, $to]);
+                ->where('resolution', $dbResolution)
+                ->whereBetween('collected_at', [$from, $to])
+                ->select('device_id', 'metric_type', 'object_id', 'object_name', 'unit',
+                         'collected_at', 'value',
+                         \DB::raw('value AS value_min'),
+                         \DB::raw('value AS value_max'));
 
             if ($req->has('device_id'))   $q->where('device_id',   $req->input('device_id'));
             if ($req->has('metric_type')) $q->where('metric_type', $req->input('metric_type'));
             if ($req->has('object_id'))   $q->where('object_id',   $req->input('object_id'));
 
-            // auto resolution: aggregate if range > 24h
-            $diffHours = (strtotime($to) - strtotime($from)) / 3600;
+            $rows = $q->orderBy('collected_at')->limit($limit)->get();
 
-            if ($resolution === 'auto') {
-                if ($diffHours > 24 * 7)       $resolution = 'day';
-                elseif ($diffHours > 24)        $resolution = 'hour';
-                else                            $resolution = 'raw';
-            }
+            // If no pre-aggregated data exists yet (aggregate job hasn't run), fall back to on-the-fly GROUP BY
+            if ($rows->isEmpty() && $resolution !== 'raw') {
+                $bindings = [$from, $to];
+                $wheres   = 'WHERE m.collected_at BETWEEN ? AND ?';
+                if ($req->has('device_id'))   { $wheres .= ' AND m.device_id = ?';   $bindings[] = $req->input('device_id'); }
+                if ($req->has('metric_type')) { $wheres .= ' AND m.metric_type = ?'; $bindings[] = $req->input('metric_type'); }
+                if ($req->has('object_id'))   { $wheres .= ' AND m.object_id = ?';   $bindings[] = $req->input('object_id'); }
 
-            // Build WHERE bindings for raw SQL (avoids ONLY_FULL_GROUP_BY alias conflict)
-            $bindings = [$from, $to];
-            $wheres   = 'WHERE m.collected_at BETWEEN ? AND ?';
-            if ($req->has('device_id'))   { $wheres .= ' AND m.device_id = ?';   $bindings[] = $req->input('device_id'); }
-            if ($req->has('metric_type')) { $wheres .= ' AND m.metric_type = ?'; $bindings[] = $req->input('metric_type'); }
-            if ($req->has('object_id'))   { $wheres .= ' AND m.object_id = ?';   $bindings[] = $req->input('object_id'); }
-
-            if ($resolution === 'day') {
+                $fmt = $resolution === 'day' ? '%Y-%m-%d 00:00:00' : '%Y-%m-%d %H:00:00';
                 $bindings[] = $limit;
                 $rows = collect(\DB::select("
                     SELECT m.device_id, m.metric_type, m.object_id, m.object_name, m.unit,
-                           DATE_FORMAT(m.collected_at, '%Y-%m-%d 00:00:00') AS collected_at,
+                           DATE_FORMAT(m.collected_at, '{$fmt}') AS collected_at,
                            AVG(m.value) AS value, MIN(m.value) AS value_min, MAX(m.value) AS value_max
                     FROM updive_metrics m
                     {$wheres}
                     GROUP BY m.device_id, m.metric_type, m.object_id, m.object_name, m.unit,
-                             DATE_FORMAT(m.collected_at, '%Y-%m-%d 00:00:00')
-                    ORDER BY DATE_FORMAT(m.collected_at, '%Y-%m-%d 00:00:00')
+                             DATE_FORMAT(m.collected_at, '{$fmt}')
+                    ORDER BY DATE_FORMAT(m.collected_at, '{$fmt}')
                     LIMIT ?
                 ", $bindings));
-            } elseif ($resolution === 'hour') {
-                $bindings[] = $limit;
-                $rows = collect(\DB::select("
-                    SELECT m.device_id, m.metric_type, m.object_id, m.object_name, m.unit,
-                           DATE_FORMAT(m.collected_at, '%Y-%m-%d %H:00:00') AS collected_at,
-                           AVG(m.value) AS value, MIN(m.value) AS value_min, MAX(m.value) AS value_max
-                    FROM updive_metrics m
-                    {$wheres}
-                    GROUP BY m.device_id, m.metric_type, m.object_id, m.object_name, m.unit,
-                             DATE_FORMAT(m.collected_at, '%Y-%m-%d %H:00:00')
-                    ORDER BY DATE_FORMAT(m.collected_at, '%Y-%m-%d %H:00:00')
-                    LIMIT ?
-                ", $bindings));
-            } else {
-                $rows = $q->select(
-                    'device_id', 'metric_type', 'object_id', 'object_name', 'unit',
-                    'collected_at', 'value',
-                    \DB::raw('value AS value_min'),
-                    \DB::raw('value AS value_max')
-                )->orderBy('collected_at')->limit($limit)->get();
             }
 
             return response()->json([
@@ -259,33 +535,53 @@ Route::prefix('v0')->group(function (): void {
 
         // ── System stats (dashboard panel) ────────────────────────────
         Route::get('system/stats', function () {
-            $stats = \DB::selectOne("
-                SELECT
-                  (SELECT COUNT(*) FROM devices)                        AS devices_total,
-                  (SELECT COUNT(*) FROM devices WHERE status=1)         AS devices_up,
-                  (SELECT COUNT(*) FROM ports)                          AS ports_total,
-                  (SELECT COUNT(*) FROM ports WHERE ifOperStatus='up')  AS ports_up,
-                  (SELECT COUNT(*) FROM alerts WHERE state=1)           AS alerts_active,
-                  (SELECT COUNT(*) FROM alert_rules WHERE disabled=0)   AS rules_enabled,
-                  (SELECT COUNT(*) FROM eventlog)                       AS events_total,
-                  (SELECT MAX(datetime) FROM eventlog)                  AS last_event
-            ");
-            $devices = \DB::table('devices')
-                ->select('device_id','hostname','sysName','status','uptime','last_polled','last_discovered')
-                ->orderBy('device_id')->get();
-            $db_tables = \DB::select("
-                SELECT table_name, table_rows,
-                  ROUND(data_length/1024/1024,2)  AS data_mb,
-                  ROUND(index_length/1024/1024,2) AS index_mb
-                FROM information_schema.tables
-                WHERE table_schema = DATABASE()
-                ORDER BY data_length DESC LIMIT 10
-            ");
+            $data = \Cache::remember('system_stats', 60, function () {
+                $stats = \DB::selectOne("
+                    SELECT
+                      (SELECT COUNT(*) FROM devices)                        AS devices_total,
+                      (SELECT COUNT(*) FROM devices WHERE status=1)         AS devices_up,
+                      (SELECT COUNT(*) FROM ports)                          AS ports_total,
+                      (SELECT COUNT(*) FROM ports WHERE ifOperStatus='up')  AS ports_up,
+                      (SELECT COUNT(*) FROM alerts WHERE state=1)           AS alerts_active,
+                      (SELECT COUNT(*) FROM alert_rules WHERE disabled=0)   AS rules_enabled,
+                      (SELECT COUNT(*) FROM eventlog)                       AS events_total,
+                      (SELECT MAX(datetime) FROM eventlog)                  AS last_event
+                ");
+                $devices = \DB::table('devices')
+                    ->select('device_id','hostname','sysName','status','uptime','last_polled','last_discovered')
+                    ->orderBy('device_id')->get();
+                $db_tables = \DB::select("
+                    SELECT table_name, table_rows,
+                      ROUND(data_length/1024/1024,2)  AS data_mb,
+                      ROUND(index_length/1024/1024,2) AS index_mb
+                    FROM information_schema.tables
+                    WHERE table_schema = DATABASE()
+                    ORDER BY data_length DESC LIMIT 10
+                ");
+                return ['stats' => $stats, 'devices' => $devices, 'db_tables' => $db_tables];
+            });
+            return response()->json(['status' => 'ok'] + $data);
+        });
+
+        // ── Parallel poller queue status ──────────────────────────────
+        Route::get('system/poller-queue', function () {
+            $pending    = \DB::table('jobs')->where('queue', 'poller')->whereNull('reserved_at')->count();
+            $processing = \DB::table('jobs')->where('queue', 'poller')->whereNotNull('reserved_at')->count();
+            $failed     = \DB::table('failed_jobs')->where('queue', 'poller')->count();
+            $lastPoll   = \DB::table('devices')
+                ->where('ignore', 0)->whereNotNull('last_polled')->max('last_polled');
+            $staleCount = \DB::table('devices')
+                ->where('ignore', 0)
+                ->where(fn ($q) => $q->whereNull('last_polled')
+                    ->orWhere('last_polled', '<', now()->subMinutes(10)))
+                ->count();
             return response()->json([
-                'status'    => 'ok',
-                'stats'     => $stats,
-                'devices'   => $devices,
-                'db_tables' => $db_tables,
+                'status'     => 'ok',
+                'pending'    => $pending,
+                'processing' => $processing,
+                'failed'     => $failed,
+                'last_poll'  => $lastPoll,
+                'stale'      => $staleCount,
             ]);
         });
 
@@ -740,6 +1036,368 @@ Route::prefix('v0')->group(function (): void {
         })->where('id', '[0-9]+');
     });
 
+    // ── Auto-Discovery ────────────────────────────────────────────────────────
+    // GET /api/v0/discovery/candidates
+    // Returns IPs from ARP/ipv4 tables not yet in the devices table
+    Route::get('discovery/candidates', function () {
+        $knownIps = \DB::table('devices')->pluck('hostname')->merge(\DB::table('devices')->pluck('ip'))->filter()->unique()->values();
+
+        // ARP-based candidates
+        $arpCandidates = \DB::table('ipv4_mac as m')
+            ->join('devices as d', 'd.device_id', '=', 'm.device_id')
+            ->select('m.ipv4_address as ip', 'm.mac_address as mac', 'd.hostname as seen_on', 'd.sysName as seen_on_name')
+            ->whereNotNull('m.ipv4_address')
+            ->where('m.ipv4_address', '!=', '0.0.0.0')
+            ->orderBy('m.ipv4_address')
+            ->get()
+            ->filter(fn ($r) => ! $knownIps->contains($r->ip))
+            ->unique('ip')
+            ->values()
+            ->map(fn ($r) => ['ip' => $r->ip, 'mac' => $r->mac, 'source' => 'arp', 'seen_on' => $r->seen_on_name ?: $r->seen_on]);
+
+        // LLDP neighbor candidates (from links table)
+        $lldpCandidates = \DB::table('links as l')
+            ->join('devices as d', 'd.device_id', '=', 'l.local_device_id')
+            ->select('l.remote_hostname as ip', 'l.remote_platform as platform', 'd.hostname as seen_on', 'd.sysName as seen_on_name', 'l.protocol')
+            ->where('l.active', 1)
+            ->whereNotNull('l.remote_hostname')
+            ->get()
+            ->filter(fn ($r) => ! $knownIps->contains($r->ip))
+            ->unique('ip')
+            ->values()
+            ->map(fn ($r) => ['ip' => $r->ip, 'mac' => null, 'source' => strtolower($r->protocol ?? 'lldp'), 'platform' => $r->platform, 'seen_on' => $r->seen_on_name ?: $r->seen_on]);
+
+        $candidates = $arpCandidates->merge($lldpCandidates)->unique('ip')->values();
+
+        return response()->json([
+            'status'     => 'ok',
+            'count'      => $candidates->count(),
+            'candidates' => $candidates,
+        ]);
+    });
+
+    // GET /api/v0/discovery/community-pool
+    Route::get('discovery/community-pool', function () {
+        $val = \DB::table('config')->where('config_name', 'discovery.community_pool')->value('config_value');
+        $pool = $val ? json_decode($val, true) : ['public', 'private'];
+        return response()->json(['status' => 'ok', 'pool' => $pool]);
+    });
+
+    // POST /api/v0/discovery/community-pool
+    Route::post('discovery/community-pool', function (\Illuminate\Http\Request $req) {
+        $req->validate(['pool' => 'required|array|min:1', 'pool.*' => 'string|max:64']);
+        $pool = array_values(array_unique($req->input('pool')));
+        \DB::table('config')->updateOrInsert(
+            ['config_name' => 'discovery.community_pool'],
+            ['config_value' => json_encode($pool)]
+        );
+        return response()->json(['status' => 'ok', 'pool' => $pool]);
+    });
+
+    // POST /api/v0/discovery/cidr-scan
+    // fping scan + SNMP probe with community pool
+    Route::post('discovery/cidr-scan', function (\Illuminate\Http\Request $req) {
+        $req->validate(['cidr' => ['required', 'string', 'regex:/^[\d\.\/]+$/']]);
+
+        $cidr   = $req->input('cidr');
+        $portNo = (int) $req->input('port', 161);
+        $limit  = min((int) $req->input('limit', 254), 512);
+
+        // Get community pool from config
+        $val  = \DB::table('config')->where('config_name', 'discovery.community_pool')->value('config_value');
+        $pool = $val ? json_decode($val, true) : ['public'];
+
+        // Known devices to mark already-monitored
+        $knownIps = \DB::table('devices')->pluck('hostname')->merge(\DB::table('devices')->pluck('ip'))->filter()->unique();
+
+        // Run fping
+        $cmd = 'fping -a -g ' . escapeshellarg($cidr) . ' -t 500 -r 1 2>/dev/null';
+        exec($cmd, $liveHosts, $exitCode);
+        $liveHosts = array_slice(array_filter($liveHosts), 0, $limit);
+
+        $results = [];
+        foreach ($liveHosts as $host) {
+            $host = trim($host);
+            if (! $host) continue;
+
+            $entry = [
+                'ip'          => $host,
+                'ping'        => true,
+                'snmp'        => false,
+                'community'   => null,
+                'sysdescr'    => null,
+                'monitored'   => $knownIps->contains($host),
+            ];
+
+            // Try each community string
+            foreach ($pool as $community) {
+                $target = escapeshellarg("udp:{$host}/{$portNo}");
+                $r = [];
+                exec("snmpget -v2c -c " . escapeshellarg($community) . " -r 0 -t 2 {$target} SNMPv2-MIB::sysDescr.0 2>/dev/null", $r);
+                $out = implode(' ', $r);
+                if (str_contains($out, 'STRING')) {
+                    preg_match('/STRING:\s*(.+)$/', $out, $m);
+                    $entry['snmp']      = true;
+                    $entry['community'] = $community;
+                    $entry['sysdescr']  = isset($m[1]) ? trim($m[1]) : null;
+                    break;
+                }
+            }
+
+            $results[] = $entry;
+        }
+
+        return response()->json([
+            'status'  => 'ok',
+            'scanned' => count($results),
+            'alive'   => count(array_filter($results, fn($r) => $r['ping'])),
+            'snmp'    => count(array_filter($results, fn($r) => $r['snmp'])),
+            'results' => $results,
+        ]);
+    });
+
+    // ── Anomaly Detection & Forecasting ──────────────────────────────────────
+    Route::get('anomaly', function (\Illuminate\Http\Request $req) {
+        $limit = min((int) $req->query('limit', 50), 200);
+
+        // Forecasts: ports/CPU approaching limits, soonest first
+        $forecasts = \DB::table('metric_forecasts')
+            ->join('devices', 'devices.device_id', '=', 'metric_forecasts.device_id')
+            ->whereNotNull('metric_forecasts.days_until_limit')
+            ->where('metric_forecasts.days_until_limit', '<=', 90)
+            ->where('metric_forecasts.r_squared', '>=', 0.05)
+            ->where('devices.ignore', 0)
+            ->orderBy('metric_forecasts.days_until_limit')
+            ->limit($limit)
+            ->select([
+                'metric_forecasts.*',
+                'devices.hostname', 'devices.sysName', 'devices.display',
+            ])
+            ->get()
+            ->map(function ($f) {
+                $pct = $f->limit_value > 0
+                    ? round($f->current_value / $f->limit_value * 100, 1)
+                    : null;
+                $f->usage_pct    = $pct;
+                $f->device_label = $f->display ?: $f->sysName ?: $f->hostname;
+                return $f;
+            });
+
+        // Recent anomalies from eventlog
+        $anomalies = \DB::table('eventlog')
+            ->join('devices', 'devices.device_id', '=', 'eventlog.device_id')
+            ->where('eventlog.type', 'anomaly')
+            ->where('eventlog.datetime', '>=', now()->subHours(24))
+            ->orderByDesc('eventlog.datetime')
+            ->limit($limit)
+            ->select([
+                'eventlog.event_id', 'eventlog.device_id', 'eventlog.datetime',
+                'eventlog.message', 'eventlog.reference',
+                'devices.hostname', 'devices.sysName', 'devices.display',
+            ])
+            ->get();
+
+        // Summary stats
+        $stats = [
+            'forecasts_total'     => \DB::table('metric_forecasts')->whereNotNull('days_until_limit')->count(),
+            'critical_7d'         => \DB::table('metric_forecasts')->whereBetween('days_until_limit', [0, 7])->count(),
+            'warning_30d'         => \DB::table('metric_forecasts')->whereBetween('days_until_limit', [7, 30])->count(),
+            'anomalies_24h'       => \DB::table('eventlog')->where('type', 'anomaly')->where('datetime', '>=', now()->subHours(24))->count(),
+            'baselines_built'     => \DB::table('anomaly_baselines')->count(),
+        ];
+
+        return response()->json([
+            'status'    => 'ok',
+            'stats'     => $stats,
+            'forecasts' => $forecasts,
+            'anomalies' => $anomalies,
+        ]);
+    });
+
+    // ── Reports ───────────────────────────────────────────────────────────────
+    Route::get('reports/{type}', function (string $type, \Illuminate\Http\Request $req) {
+        $format = strtolower($req->query('format', 'excel')); // pdf | excel
+        $days   = max(1, min(365, (int) $req->query('days', 30)));
+        $limit  = max(1, min(500, (int) $req->query('limit', 50)));
+
+        // ── Collect data ─────────────────────────────────────────────────────
+        $data = match ($type) {
+
+            'devices' => \DB::table('devices')
+                ->where('ignore', 0)
+                ->orderBy('hostname')
+                ->get(['device_id','hostname','sysName','display','status','os','uptime','last_polled','location_id'])
+                ->map(fn ($d) => [
+                    'IP / Hostname' => $d->hostname,
+                    'Nomi'          => $d->display ?: $d->sysName ?: '',
+                    'OS'            => $d->os ?? '—',
+                    'Holat'         => $d->status ? 'UP' : 'DOWN',
+                    'Uptime (soat)' => $d->uptime ? round($d->uptime / 3600, 1) : '—',
+                    'Oxirgi polling'=> $d->last_polled ?? '—',
+                ])->toArray(),
+
+            'ports' => \DB::table('ports')
+                ->join('devices', 'devices.device_id', '=', 'ports.device_id')
+                ->where('devices.ignore', 0)
+                ->whereNotNull('ports.ifInOctets_rate')
+                ->orderByDesc(\DB::raw('(COALESCE(ports.ifInOctets_rate,0) + COALESCE(ports.ifOutOctets_rate,0))'))
+                ->limit($limit)
+                ->get(['devices.hostname','ports.ifName','ports.ifAlias','ports.ifOperStatus',
+                       'ports.ifSpeed','ports.ifInOctets_rate','ports.ifOutOctets_rate'])
+                ->map(fn ($p) => [
+                    'Qurilma'      => $p->hostname,
+                    'Port'         => $p->ifName,
+                    'Tavsif'       => $p->ifAlias ?? '—',
+                    'Holat'        => $p->ifOperStatus,
+                    'Tezlik (Mbps)'=> $p->ifSpeed ? round($p->ifSpeed / 1e6) : '—',
+                    'In (Mbps)'    => $p->ifInOctets_rate  ? round($p->ifInOctets_rate  * 8 / 1e6, 3) : 0,
+                    'Out (Mbps)'   => $p->ifOutOctets_rate ? round($p->ifOutOctets_rate * 8 / 1e6, 3) : 0,
+                    'Utilization %'=> ($p->ifSpeed && $p->ifSpeed > 0)
+                        ? round((($p->ifInOctets_rate ?? 0) + ($p->ifOutOctets_rate ?? 0)) * 8 / $p->ifSpeed * 100, 1)
+                        : '—',
+                ])->toArray(),
+
+            'alerts' => \DB::table('alert_log as al')
+                ->join('alert_rules as ar', 'ar.id', '=', 'al.rule_id')
+                ->join('devices as d', 'd.device_id', '=', 'al.device_id')
+                ->where('al.time_logged', '>=', now()->subDays($days))
+                ->orderByDesc('al.time_logged')
+                ->limit($limit)
+                ->get(['al.time_logged','d.hostname','ar.name as rule','al.state'])
+                ->map(fn ($a) => [
+                    'Vaqt'     => $a->time_logged,
+                    'Qurilma'  => $a->hostname,
+                    'Qoida'    => $a->rule,
+                    'Holat'    => match ((int) $a->state) { 1 => 'Fired', 0 => 'Cleared', 2 => 'ACK', default => 'Unknown' },
+                ])->toArray(),
+
+            'uptime' => \DB::table('devices')
+                ->where('ignore', 0)
+                ->orderByDesc('uptime')
+                ->get(['hostname','display','sysName','status','uptime'])
+                ->map(function ($d) {
+                    $thirtyDays = 30 * 24 * 3600;
+                    $sla = $d->uptime ? min(100, round($d->uptime / $thirtyDays * 100, 2)) : 0;
+                    return [
+                        'Qurilma'        => $d->display ?: $d->sysName ?: $d->hostname,
+                        'IP'             => $d->hostname,
+                        'Holat'          => $d->status ? 'UP' : 'DOWN',
+                        'Uptime (soat)'  => $d->uptime ? round($d->uptime / 3600, 1) : 0,
+                        'SLA 30 kun (%)'=> $sla,
+                    ];
+                })->toArray(),
+
+            'top-traffic' => \DB::table('devices as d')
+                ->join('ports as p', 'p.device_id', '=', 'd.device_id')
+                ->where('d.ignore', 0)
+                ->whereNotNull('p.ifInOctets_rate')
+                ->selectRaw('d.hostname, d.display, d.sysName,
+                    SUM(COALESCE(p.ifInOctets_rate,0))  as total_in,
+                    SUM(COALESCE(p.ifOutOctets_rate,0)) as total_out,
+                    SUM(CASE WHEN p.ifOperStatus="up" THEN 1 ELSE 0 END) as ports_up,
+                    COUNT(p.port_id) as ports_total')
+                ->groupBy('d.device_id','d.hostname','d.display','d.sysName')
+                ->orderByDesc(\DB::raw('SUM(COALESCE(p.ifInOctets_rate,0)) + SUM(COALESCE(p.ifOutOctets_rate,0))'))
+                ->limit($limit)
+                ->get()
+                ->map(fn ($r) => [
+                    'Qurilma'       => $r->display ?: $r->sysName ?: $r->hostname,
+                    'IP'            => $r->hostname,
+                    'In (Mbps)'     => round($r->total_in  * 8 / 1e6, 2),
+                    'Out (Mbps)'    => round($r->total_out * 8 / 1e6, 2),
+                    'Jami (Mbps)'   => round(($r->total_in + $r->total_out) * 8 / 1e6, 2),
+                    'Portlar'       => "{$r->ports_up}/{$r->ports_total}",
+                ])->toArray(),
+
+            default => null,
+        };
+
+        if ($data === null) {
+            return response()->json(['message' => "Unknown report type: {$type}"], 404);
+        }
+
+        $titles = [
+            'devices'     => 'Qurilma Holati Hisoboti',
+            'ports'       => 'Port Utilization Hisoboti',
+            'alerts'      => "Alert Tarixi ({$days} kun)",
+            'uptime'      => 'Uptime SLA Hisoboti',
+            'top-traffic' => "Top {$limit} Traffic Hisoboti",
+        ];
+        $title = $titles[$type] ?? ucfirst($type);
+        $filename = $type . '_' . date('Y-m-d');
+
+        // ── Excel ────────────────────────────────────────────────────────────
+        if ($format === 'excel') {
+            $spreadsheet = new \PhpOffice\PhpSpreadsheet\Spreadsheet();
+            $sheet = $spreadsheet->getActiveSheet();
+            $sheet->setTitle(substr($title, 0, 31));
+
+            // Title row
+            $sheet->setCellValue('A1', $title);
+            $sheet->setCellValue('A2', 'Sana: ' . now()->format('Y-m-d H:i'));
+            $sheet->mergeCells('A1:' . \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex(count($data[0] ?? ['x'])) . '1');
+
+            // Style title
+            $sheet->getStyle('A1')->getFont()->setBold(true)->setSize(14);
+            $sheet->getStyle('A1')->getAlignment()->setHorizontal('center');
+
+            if (empty($data)) {
+                $sheet->setCellValue('A3', 'Ma\'lumot topilmadi');
+            } else {
+                // Headers
+                $headers = array_keys($data[0]);
+                foreach ($headers as $ci => $h) {
+                    $col = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex($ci + 1);
+                    $sheet->setCellValue($col . '3', $h);
+                    $sheet->getStyle($col . '3')->getFont()->setBold(true);
+                    $sheet->getStyle($col . '3')->getFill()
+                        ->setFillType(\PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID)
+                        ->getStartColor()->setRGB('E8ECF0');
+                }
+
+                // Data rows
+                foreach ($data as $ri => $row) {
+                    foreach (array_values($row) as $ci => $val) {
+                        $col = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex($ci + 1);
+                        $sheet->setCellValue($col . ($ri + 4), $val);
+                    }
+                }
+
+                // Auto-size columns
+                foreach (range(1, count($headers)) as $ci) {
+                    $sheet->getColumnDimensionByColumn($ci)->setAutoSize(true);
+                }
+            }
+
+            $writer = new \PhpOffice\PhpSpreadsheet\Writer\Xlsx($spreadsheet);
+            $tmpFile = tempnam(sys_get_temp_dir(), 'report_') . '.xlsx';
+            $writer->save($tmpFile);
+
+            return response()->download($tmpFile, $filename . '.xlsx', [
+                'Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            ])->deleteFileAfterSend(true);
+        }
+
+        // ── PDF ──────────────────────────────────────────────────────────────
+        $headers = $data ? array_keys($data[0]) : [];
+        $html = view()->make('reports.base', compact('title', 'headers', 'data', 'days'))->render();
+
+        $dompdf = new \Dompdf\Dompdf([
+            'isHtml5ParserEnabled' => true,
+            'isRemoteEnabled'      => false,
+            'defaultFont'          => 'DejaVu Sans',
+            'chroot'               => base_path(),
+        ]);
+        $dompdf->loadHtml($html);
+        $dompdf->setPaper('a4', 'landscape');
+        $dompdf->render();
+
+        return response($dompdf->output(), 200, [
+            'Content-Type'        => 'application/pdf',
+            'Content-Disposition' => 'attachment; filename="' . $filename . '.pdf"',
+        ]);
+    })->where('type', '[a-z\-]+');
+
     // Route not found
     Route::any('/{path?}', [App\Api\Controllers\LegacyApiController::class, 'api_not_found'])->where('path', '.*');
 });
@@ -817,4 +1475,116 @@ Route::prefix('v2')->group(function (): void {
     Route::post('alert-transports',        [$c, 'createTransport']);
     Route::put('alert-transports/{id}',    [$c, 'updateTransport'])->where('id', '[0-9]+');
     Route::delete('alert-transports/{id}', [$c, 'deleteTransport'])->where('id', '[0-9]+');
+
+    // ── RBAC: roles & permissions ─────────────────────────────────────────────
+    // GET  /api/v2/rbac/roles          — list all roles with permission counts & users
+    Route::get('rbac/roles', function () {
+        $roles = \Spatie\Permission\Models\Role::withCount(['permissions', 'users'])->get()
+            ->map(fn ($r) => [
+                'id'               => $r->id,
+                'name'             => $r->name,
+                'permissions_count'=> $r->permissions_count,
+                'users_count'      => $r->users_count,
+                'editable'         => ! in_array($r->name, ['super-admin']),
+            ]);
+        return response()->json(['roles' => $roles]);
+    });
+
+    // GET  /api/v2/rbac/roles/{id}     — role detail with permissions list
+    Route::get('rbac/roles/{id}', function ($id) {
+        $role = \Spatie\Permission\Models\Role::with('permissions')->findOrFail($id);
+        return response()->json([
+            'role' => [
+                'id'          => $role->id,
+                'name'        => $role->name,
+                'permissions' => $role->permissions->pluck('name')->sort()->values(),
+                'editable'    => ! in_array($role->name, ['super-admin']),
+            ],
+        ]);
+    })->where('id', '[0-9]+');
+
+    // POST /api/v2/rbac/roles          — create custom role
+    Route::post('rbac/roles', function (\Illuminate\Http\Request $req) {
+        $req->validate([
+            'name'        => 'required|string|max:64|unique:roles,name',
+            'permissions' => 'array',
+            'permissions.*' => 'string|exists:permissions,name',
+        ]);
+        $role = \Spatie\Permission\Models\Role::create(['name' => $req->input('name'), 'guard_name' => 'web']);
+        if ($req->filled('permissions')) {
+            $role->syncPermissions($req->input('permissions'));
+        }
+        app()[\Spatie\Permission\PermissionRegistrar::class]->forgetCachedPermissions();
+        return response()->json(['status' => 'ok', 'role' => ['id' => $role->id, 'name' => $role->name]], 201);
+    });
+
+    // PUT  /api/v2/rbac/roles/{id}     — update permissions of a role
+    Route::put('rbac/roles/{id}', function ($id, \Illuminate\Http\Request $req) {
+        $role = \Spatie\Permission\Models\Role::findOrFail($id);
+        if ($role->name === 'super-admin') {
+            return response()->json(['message' => 'super-admin rolini o\'zgartirib bo\'lmaydi'], 403);
+        }
+        $req->validate(['permissions' => 'required|array', 'permissions.*' => 'string|exists:permissions,name']);
+        $role->syncPermissions($req->input('permissions'));
+        app()[\Spatie\Permission\PermissionRegistrar::class]->forgetCachedPermissions();
+        return response()->json(['status' => 'ok']);
+    })->where('id', '[0-9]+');
+
+    // DELETE /api/v2/rbac/roles/{id}   — delete custom role
+    Route::delete('rbac/roles/{id}', function ($id) {
+        $role = \Spatie\Permission\Models\Role::findOrFail($id);
+        if (in_array($role->name, ['super-admin', 'admin', 'operator', 'viewer', 'global-read', 'user'])) {
+            return response()->json(['message' => 'Tizim rolini o\'chirib bo\'lmaydi'], 403);
+        }
+        $role->delete();
+        app()[\Spatie\Permission\PermissionRegistrar::class]->forgetCachedPermissions();
+        return response()->json(['status' => 'ok']);
+    })->where('id', '[0-9]+');
+
+    // GET  /api/v2/rbac/permissions    — all permissions grouped by resource
+    Route::get('rbac/permissions', function () {
+        $perms = \Spatie\Permission\Models\Permission::orderBy('name')->pluck('name');
+        $grouped = [];
+        foreach ($perms as $p) {
+            $parts    = explode('.', $p, 2);
+            $resource = $parts[0];
+            $action   = $parts[1] ?? $p;
+            $grouped[$resource][] = $p;
+        }
+        return response()->json(['permissions' => $grouped]);
+    });
+
+    // GET  /api/v2/rbac/users          — users with their roles
+    Route::get('rbac/users', function () {
+        $users = \App\Models\User::with('roles')->get()->map(fn ($u) => [
+            'id'       => $u->user_id,
+            'username' => $u->username,
+            'realname' => $u->realname,
+            'email'    => $u->email,
+            'enabled'  => (bool) $u->enabled,
+            'roles'    => $u->roles->pluck('name')->values(),
+        ]);
+        return response()->json(['users' => $users]);
+    });
+
+    // PATCH /api/v2/rbac/users/{id}/roles — assign roles to a user
+    Route::patch('rbac/users/{id}/roles', function ($id, \Illuminate\Http\Request $req) {
+        $req->validate(['roles' => 'required|array', 'roles.*' => 'string|exists:roles,name']);
+        $user = \App\Models\User::findOrFail($id);
+
+        // Prevent removing super-admin from the last super-admin user
+        $roles = $req->input('roles');
+        if (! in_array('super-admin', $roles)) {
+            $otherSuperAdmins = \App\Models\User::whereHas('roles', fn ($q) => $q->where('name', 'super-admin'))
+                ->where('user_id', '!=', $id)->count();
+            $currentlySuper = $user->hasRole('super-admin');
+            if ($currentlySuper && $otherSuperAdmins === 0) {
+                return response()->json(['message' => 'Kamida 1 ta super-admin bo\'lishi kerak'], 422);
+            }
+        }
+
+        $user->syncRoles($roles);
+        app()[\Spatie\Permission\PermissionRegistrar::class]->forgetCachedPermissions();
+        return response()->json(['status' => 'ok', 'roles' => $roles]);
+    })->where('id', '[0-9]+');
 });

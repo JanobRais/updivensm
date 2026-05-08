@@ -153,6 +153,12 @@ class Core implements Module
      */
     public static function detectOS(Device $device, bool $fetch = true): string
     {
+        // If the user manually locked the OS, skip re-detection
+        if (! empty($device->os_forced) && ! empty($device->os)) {
+            Log::debug("OS detection skipped — os_forced=1, using: {$device->os}");
+            return $device->os;
+        }
+
         if ($fetch) {
             // some devices act oddly when getting both OIDs at once
             $device->sysDescr = SnmpQuery::device($device)->get('SNMPv2-MIB::sysDescr.0')->value();
@@ -197,7 +203,48 @@ class Core implements Module
             }
         }
 
+        // Fallback: vendor OID prefix map (covers unknown models of known vendors)
+        $vendorOs = self::detectByVendorPrefix($device->sysObjectID ?? '');
+        if ($vendorOs) {
+            Log::debug("OS detected via vendor OID prefix map: $vendorOs");
+            return $vendorOs;
+        }
+
         return 'generic';
+    }
+
+    /**
+     * Try to identify the OS using the vendor_oid_map.yaml prefix table.
+     * This runs only after all YAML definitions have failed to match.
+     */
+    private static function detectByVendorPrefix(string $oid): ?string
+    {
+        if (empty($oid)) {
+            return null;
+        }
+
+        $mapFile = base_path('resources/definitions/vendor_oid_map.yaml');
+        if (! file_exists($mapFile)) {
+            return null;
+        }
+
+        try {
+            $map = \Symfony\Component\Yaml\Yaml::parseFile($mapFile);
+        } catch (\Throwable) {
+            return null;
+        }
+
+        if (! is_array($map)) {
+            return null;
+        }
+
+        foreach ($map as $prefix => $os) {
+            if (Str::startsWith($oid, (string) $prefix)) {
+                return (string) $os;
+            }
+        }
+
+        return null;
     }
 
     /**

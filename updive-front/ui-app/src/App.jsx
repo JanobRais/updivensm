@@ -30,6 +30,11 @@ import UsersPage from './pages/UsersPage';
 import SettingsPage from './pages/SettingsPage';
 import MetricsPage from './pages/MetricsPage';
 import TemplatesPage from './pages/TemplatesPage';
+import TopologyPage from './pages/TopologyPage';
+import RBACPage from './pages/RBACPage';
+import DiscoveryPage from './pages/DiscoveryPage';
+import ReportsPage from './pages/ReportsPage';
+import AnomalyPage from './pages/AnomalyPage';
 import {
   OspfPage, VrfPage, VlansPage, DeviceGroupsPage, PortGroupsPage,
   LocationsPage, BillsPage, PortSecurityPage, ArpPage,
@@ -108,6 +113,11 @@ function App() {
       case 'bills':          return <BillsPage />;
       case 'port_security':  return <PortSecurityPage />;
       case 'arp':            return <ArpPage />;
+      case 'topology':       return <TopologyPage accent={ACCENT} />;
+      case 'rbac':           return <RBACPage accent={ACCENT} />;
+      case 'discovery':      return <DiscoveryPage accent={ACCENT} />;
+      case 'reports':        return <ReportsPage accent={ACCENT} />;
+      case 'anomaly':        return <AnomalyPage accent={ACCENT} />;
       default:               return <PlaceholderPage title={activePage.charAt(0).toUpperCase() + activePage.slice(1)} desc="This module is under development." accent={ACCENT} />;
     }
   };
@@ -128,7 +138,10 @@ function App() {
           accent={ACCENT}
         />
 
-        <main style={{ flex: 1, overflowY: 'auto', padding: '20px 24px' }}>
+        <main style={{
+          flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column',
+          ...(activePage !== 'topology' && { overflowY: 'auto', padding: '20px 24px' }),
+        }}>
           <ErrorBoundary key={activePage}>
             {renderPage()}
           </ErrorBoundary>

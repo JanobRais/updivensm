@@ -75,12 +75,16 @@ class AlertRule extends BaseModel
         'builder',
         'invert_map',
         'alert_operation_id',
+        'confirm_count',
+        'delay_min',
     ];
 
     protected $casts = [
-        'builder' => 'array',
-        'extra' => 'array',
+        'builder'            => 'array',
+        'extra'              => 'array',
         'alert_operation_id' => 'integer',
+        'confirm_count'      => 'integer',
+        'delay_min'          => 'integer',
     ];
 
     // ---- Query scopes ----

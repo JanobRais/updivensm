@@ -7,10 +7,13 @@ const navGroups = [
     { id: "dashboard", label: "Dashboard", icon: "dashboard" },
     { id: "devices", label: "Devices", icon: "devices" },
     { id: "device_groups", label: "Device Groups", icon: "network" },
+    { id: "topology", label: "Topology Map", icon: "map" },
+    { id: "discovery", label: "Auto-Discovery", icon: "eye" },
   ]},
   { label: "Monitoring", items: [
     { id: "alerts", label: "Alerts", icon: "alerts" },
     { id: "alert_rules", label: "Alert Rules", icon: "settings" },
+    { id: "anomaly", label: "Anomaly & Forecast", icon: "activity" },
     { id: "metrics", label: "Metrics History", icon: "activity" },
     { id: "services", label: "Services", icon: "services" },
     { id: "logs", label: "Event Logs", icon: "logs" },
@@ -35,10 +38,12 @@ const navGroups = [
     { id: "inventory", label: "Inventory", icon: "inventory" },
     { id: "bills", label: "Bills", icon: "download" },
     { id: "locations", label: "Locations", icon: "map" },
+    { id: "reports", label: "Hisobotlar", icon: "download" },
   ]},
   { label: "Settings", items: [
     { id: "system", label: "System", icon: "server" },
     { id: "users", label: "Users", icon: "users" },
+    { id: "rbac", label: "Roles & Permissions", icon: "eye" },
     { id: "settings", label: "Settings", icon: "settings" },
   ]},
 ];
@@ -121,14 +126,14 @@ export const Sidebar = ({ active, onNav, collapsed, accent }) => (
 
 // ─── TOP BAR ─────────────────────────────────────────────────────
 const breadcrumbMap = {
-  dashboard: ["Home", "Dashboard"], devices: ["Home", "Devices"], device_groups: ["Home", "Device Groups"],
+  dashboard: ["Home", "Dashboard"], devices: ["Home", "Devices"], device_groups: ["Home", "Device Groups"], topology: ["Home", "Topology Map"], discovery: ["Home", "Auto-Discovery"],
   ports: ["Interfaces", "Ports"], port_groups: ["Interfaces", "Port Groups"], arp: ["Interfaces", "ARP Table"],
-  alerts: ["Monitoring", "Alerts"], alert_rules: ["Monitoring", "Alert Rules"], metrics: ["Monitoring", "Metrics History"], services: ["Monitoring", "Services"], logs: ["Monitoring", "Event Logs"],
+  alerts: ["Monitoring", "Alerts"], alert_rules: ["Monitoring", "Alert Rules"], anomaly: ["Monitoring", "Anomaly & Forecast"], metrics: ["Monitoring", "Metrics History"], services: ["Monitoring", "Services"], logs: ["Monitoring", "Event Logs"],
   pollers: ["Monitoring", "Pollers"], poller_groups: ["Monitoring", "Poller Groups"],
   bgp: ["Routing", "BGP"], ospf: ["Routing", "OSPF"], vrf: ["Routing", "VRFs"],
   vlans: ["Switching", "VLANs"], port_security: ["Switching", "Port Security"],
-  inventory: ["Assets", "Inventory"], bills: ["Assets", "Bills"], locations: ["Assets", "Locations"],
-  system: ["Settings", "System"], users: ["Settings", "Users"], settings: ["Settings", "Settings"],
+  inventory: ["Assets", "Inventory"], bills: ["Assets", "Bills"], locations: ["Assets", "Locations"], reports: ["Assets", "Hisobotlar"],
+  system: ["Settings", "System"], users: ["Settings", "Users"], rbac: ["Settings", "Roles & Permissions"], settings: ["Settings", "Settings"],
 };
 
 export const TopBar = ({ page, onToggle, accent }) => {

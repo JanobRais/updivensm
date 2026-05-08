@@ -48,6 +48,9 @@ class StoreAlertRuleRequest extends FormRequest
             // Optional: attach to an existing notification operation
             'alert_operation_id' => ['nullable', 'integer',
                                      Rule::exists('alert_operations', 'id')],
+
+            'confirm_count'      => ['nullable', 'integer', 'min:1', 'max:10'],
+            'delay_min'          => ['nullable', 'integer', 'min:0', 'max:1440'],
         ];
     }
 
