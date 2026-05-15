@@ -1274,62 +1274,46 @@ const DeviceDetailsPage = ({ hostname, onBack, accent }) => {
             <div style={{ background: '#fff', borderRadius: 10, border: '1px solid #e8ecf0', padding: 40, textAlign: 'center', color: '#9ca3af', fontSize: 12 }}>
               Loading health data...
             </div>
-          ) : !health || (!health.graphs && !health.health) || (Array.isArray(health.graphs) && health.graphs.length === 0) ? (
+          ) : !health || !health.sensors || health.sensors.length === 0 ? (
             <div style={{ background: '#fff', borderRadius: 10, border: '1px dashed #e8ecf0', padding: 40, textAlign: 'center' }}>
               <div style={{ fontSize: 14, fontWeight: 600, color: '#374151', marginBottom: 8 }}>No Health Sensors</div>
               <div style={{ fontSize: 12, color: '#9ca3af' }}>This device does not report SNMP health sensors (temperature, voltage, fans, etc.).</div>
             </div>
           ) : (
-            <>
-              {/* graphs array from API: [{desc, name}] */}
-              {Array.isArray(health.graphs) && health.graphs.length > 0 && (
-                <Section title={`Health Sensors (${health.graphs.length} types)`}>
-                  <div style={{ padding: '14px 18px', display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                    {health.graphs.map(g => (
-                      <span key={g.name} style={{ background: `${accent}15`, color: accent, fontSize: 12, fontWeight: 600, padding: '6px 14px', borderRadius: 20, textTransform: 'capitalize' }}>
-                        {g.desc}
-                      </span>
-                    ))}
-                  </div>
-                </Section>
-              )}
-
-              {/* sensor objects from API */}
-              {Array.isArray(health.health) && health.health.length > 0 && (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px,1fr))', gap: 12 }}>
-                  {health.health.map((sensor, i) => {
-                    const pct  = sensor.sensor_limit > 0 ? Math.min(100, Math.round((sensor.sensor_current / sensor.sensor_limit) * 100)) : null;
-                    const warn = pct !== null && sensor.sensor_limit_warn ? Math.round((sensor.sensor_limit_warn / sensor.sensor_limit) * 100) : 75;
-                    const barColor = pct !== null ? (pct >= warn ? '#ef4444' : pct >= 50 ? '#f59e0b' : accent) : accent;
-                    return (
-                      <div key={sensor.sensor_id ?? i} style={{ background: '#fff', borderRadius: 10, border: '1px solid #e8ecf0', padding: '14px 16px' }}>
-                        <div style={{ fontSize: 10, fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>
-                          {sensor.sensor_class || 'Sensor'}
-                        </div>
-                        <div style={{ fontSize: 13, fontWeight: 700, color: '#111827', marginBottom: 4 }}>
-                          {sensor.sensor_descr || `Sensor #${sensor.sensor_id}`}
-                        </div>
-                        <div style={{ fontSize: 18, fontWeight: 700, color: barColor, marginBottom: 8 }}>
-                          {sensor.sensor_current ?? '—'}
-                          {sensor.sensor_class === 'temperature' ? ' °C' : sensor.sensor_class === 'voltage' ? ' V' : sensor.sensor_class === 'fanspeed' ? ' RPM' : ''}
-                        </div>
-                        {pct !== null && (
-                          <div style={{ background: '#f0f2f5', borderRadius: 4, height: 5 }}>
-                            <div style={{ width: `${pct}%`, height: '100%', borderRadius: 4, background: barColor, transition: 'width 0.4s' }} />
-                          </div>
-                        )}
-                        {(sensor.sensor_limit || sensor.sensor_limit_warn) && (
-                          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4, fontSize: 9, color: '#9ca3af' }}>
-                            <span>Warn: {sensor.sensor_limit_warn ?? '—'}</span>
-                            <span>Limit: {sensor.sensor_limit ?? '—'}</span>
-                          </div>
-                        )}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px,1fr))', gap: 12 }}>
+              {health.sensors.map((sensor, i) => {
+                const val = parseFloat(sensor.sensor_current);
+                const lim = parseFloat(sensor.sensor_limit);
+                const pct = lim > 0 && !isNaN(val) ? Math.min(100, Math.round((val / lim) * 100)) : null;
+                const warnPct = sensor.sensor_limit_warn && lim > 0 ? Math.round((parseFloat(sensor.sensor_limit_warn) / lim) * 100) : 75;
+                const barColor = pct !== null ? (pct >= warnPct ? '#ef4444' : pct >= 50 ? '#f59e0b' : accent) : accent;
+                const unit = sensor.sensor_unit || (sensor.sensor_class === 'temperature' ? '°C' : sensor.sensor_class === 'voltage' ? 'V' : sensor.sensor_class === 'fanspeed' ? 'RPM' : sensor.sensor_class === 'current' ? 'A' : sensor.sensor_class === 'dbm' ? 'dBm' : '');
+                return (
+                  <div key={sensor.sensor_id ?? i} style={{ background: '#fff', borderRadius: 10, border: '1px solid #e8ecf0', padding: '14px 16px' }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>
+                      {sensor.sensor_class || 'Sensor'}
+                    </div>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 6 }}>
+                      {sensor.sensor_descr || `Sensor #${sensor.sensor_id}`}
+                    </div>
+                    <div style={{ fontSize: 22, fontWeight: 700, color: barColor, marginBottom: 8 }}>
+                      {sensor.sensor_current ?? '—'}{unit && <span style={{ fontSize: 13, marginLeft: 3 }}>{unit}</span>}
+                    </div>
+                    {pct !== null && (
+                      <div style={{ background: '#f0f2f5', borderRadius: 4, height: 5, marginBottom: 4 }}>
+                        <div style={{ width: `${pct}%`, height: '100%', borderRadius: 4, background: barColor, transition: 'width 0.4s' }} />
                       </div>
-                    );
-                  })}
-                </div>
-              )}
-            </>
+                    )}
+                    {(sensor.sensor_limit || sensor.sensor_limit_warn) && (
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 2, fontSize: 9, color: '#9ca3af' }}>
+                        <span>Warn: {sensor.sensor_limit_warn ?? '—'}</span>
+                        <span>Limit: {sensor.sensor_limit ?? '—'}</span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           )}
         </div>
       )}

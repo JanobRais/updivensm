@@ -103,7 +103,7 @@ export const getDeviceProcessors = (hostname) => cached(`procs:${hostname}`,    
 export const getDeviceMempools   = (hostname) => cached(`mems:${hostname}`,      () => api.get(`/devices/${hostname}/mempools`).then(r => r.data?.mempools ?? []));
 export const getDevicePorts      = (hostname) => cached(`devports:${hostname}`,  () => api.get(`/devices/${hostname}/ports`, { params: { columns: PORT_COLUMNS } }).then(r => r.data?.ports ?? []));
 export const getDeviceEventlog   = (hostname) => cached(`evlog:${hostname}`,     () => api.get(`/logs/eventlog/${hostname}`).then(r => r.data?.logs ?? []));
-export const getDeviceHealth     = (hostname) =>                                        api.get(`/devices/${hostname}/health`).then(r => r.data || {});
+export const getDeviceHealth     = (hostname) =>                                        api.get(`/devices/${hostname}/sensors`).then(r => r.data || {});
 export const getDeviceAlerts     = (hostname) => cached(`alts:${hostname}`,      () => api.get('/alerts').then(r => (r.data?.alerts ?? []).filter(a => a.hostname === hostname)));
 export const getInventory        = (hostname) =>                                        api.get(`/inventory/${hostname}/all`).then(r => r.data?.inventory ?? []);
 export const getDeviceLinks      = (hostname) => cached(`links:${hostname}`,       () => api.get(`/devices/${hostname}/links`).then(r => r.data?.links ?? []).catch(() => []));

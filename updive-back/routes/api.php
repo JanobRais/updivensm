@@ -944,6 +944,18 @@ Route::prefix('v0')->group(function (): void {
         Route::get('{hostname}/fdb', [App\Api\Controllers\LegacyApiController::class, 'get_fdb'])->name('get_fdb');
         Route::get('{hostname}/nac', [App\Api\Controllers\LegacyApiController::class, 'get_nac'])->name('get_nac');
         Route::get('{hostname}/health/{type?}/{sensor_id?}', [App\Api\Controllers\LegacyApiController::class, 'list_available_health_graphs'])->name('list_available_health_graphs');
+        Route::get('{hostname}/sensors', function ($hostname) {
+            $device = \DB::table('devices')->where('hostname', $hostname)->first();
+            if (!$device) return response()->json(['status' => 'error', 'message' => 'Device not found'], 404);
+            $sensors = \DB::table('sensors')
+                ->where('device_id', $device->device_id)
+                ->whereNotNull('sensor_current')
+                ->orderBy('sensor_class')
+                ->orderBy('sensor_descr')
+                ->get(['sensor_id', 'sensor_class', 'sensor_descr', 'sensor_current',
+                       'sensor_limit', 'sensor_limit_warn', 'sensor_limit_low', 'sensor_unit']);
+            return response()->json(['status' => 'ok', 'sensors' => $sensors, 'count' => $sensors->count()]);
+        });
         Route::get('{hostname}/wireless/{type?}/{sensor_id?}', [App\Api\Controllers\LegacyApiController::class, 'list_available_wireless_graphs'])->name('list_available_wireless_graphs');
         Route::get('{hostname}/ports', [App\Api\Controllers\LegacyApiController::class, 'get_device_ports'])->name('get_device_ports');
         Route::get('{hostname}/ip', [App\Api\Controllers\LegacyApiController::class, 'get_device_ip_addresses'])->name('get_ip_addresses');
