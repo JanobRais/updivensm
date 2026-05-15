@@ -952,7 +952,7 @@ Route::prefix('v0')->group(function (): void {
                 ->orderBy('sensor_class')
                 ->orderBy('sensor_descr')
                 ->get(['sensor_id', 'sensor_class', 'sensor_descr', 'sensor_current',
-                       'sensor_limit', 'sensor_limit_warn', 'sensor_limit_low', 'sensor_unit']);
+                       'sensor_limit', 'sensor_limit_warn', 'sensor_limit_low']);
             return response()->json(['status' => 'ok', 'sensors' => $sensors, 'count' => $sensors->count()]);
         });
         Route::get('{hostname}/wireless/{type?}/{sensor_id?}', [App\Api\Controllers\LegacyApiController::class, 'list_available_wireless_graphs'])->name('list_available_wireless_graphs');
