@@ -1274,28 +1274,28 @@ const DeviceDetailsPage = ({ hostname, onBack, accent }) => {
             <div style={{ background: '#fff', borderRadius: 10, border: '1px solid #e8ecf0', padding: 40, textAlign: 'center', color: '#9ca3af', fontSize: 12 }}>
               Loading health data...
             </div>
-          ) : !health || !health.health || (Array.isArray(health.health) && health.health.length === 0) ? (
+          ) : !health || (!health.graphs && !health.health) || (Array.isArray(health.graphs) && health.graphs.length === 0) ? (
             <div style={{ background: '#fff', borderRadius: 10, border: '1px dashed #e8ecf0', padding: 40, textAlign: 'center' }}>
               <div style={{ fontSize: 14, fontWeight: 600, color: '#374151', marginBottom: 8 }}>No Health Sensors</div>
               <div style={{ fontSize: 12, color: '#9ca3af' }}>This device does not report SNMP health sensors (temperature, voltage, fans, etc.).</div>
             </div>
           ) : (
             <>
-              {/* If response is a list of type strings */}
-              {Array.isArray(health.health) && typeof health.health[0] === 'string' && (
-                <Section title="Available Health Sensor Types">
+              {/* graphs array from API: [{desc, name}] */}
+              {Array.isArray(health.graphs) && health.graphs.length > 0 && (
+                <Section title={`Health Sensors (${health.graphs.length} types)`}>
                   <div style={{ padding: '14px 18px', display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                    {health.health.map(type => (
-                      <span key={type} style={{ background: `${accent}15`, color: accent, fontSize: 11, fontWeight: 600, padding: '4px 12px', borderRadius: 20, textTransform: 'capitalize' }}>
-                        {type}
+                    {health.graphs.map(g => (
+                      <span key={g.name} style={{ background: `${accent}15`, color: accent, fontSize: 12, fontWeight: 600, padding: '6px 14px', borderRadius: 20, textTransform: 'capitalize' }}>
+                        {g.desc}
                       </span>
                     ))}
                   </div>
                 </Section>
               )}
 
-              {/* If response contains sensor objects */}
-              {Array.isArray(health.health) && typeof health.health[0] === 'object' && (
+              {/* sensor objects from API */}
+              {Array.isArray(health.health) && health.health.length > 0 && (
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px,1fr))', gap: 12 }}>
                   {health.health.map((sensor, i) => {
                     const pct  = sensor.sensor_limit > 0 ? Math.min(100, Math.round((sensor.sensor_current / sensor.sensor_limit) * 100)) : null;
@@ -1327,13 +1327,6 @@ const DeviceDetailsPage = ({ hostname, onBack, accent }) => {
                       </div>
                     );
                   })}
-                </div>
-              )}
-
-              {/* Raw data fallback */}
-              {(!Array.isArray(health.health) || health.health.length === 0) && health.count === 0 && (
-                <div style={{ background: '#fff', borderRadius: 10, border: '1px dashed #e8ecf0', padding: 32, textAlign: 'center', color: '#9ca3af', fontSize: 12 }}>
-                  No sensors reported by this device.
                 </div>
               )}
             </>
