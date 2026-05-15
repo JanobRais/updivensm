@@ -1279,42 +1279,74 @@ const DeviceDetailsPage = ({ hostname, onBack, accent }) => {
               <div style={{ fontSize: 14, fontWeight: 600, color: '#374151', marginBottom: 8 }}>No Health Sensors</div>
               <div style={{ fontSize: 12, color: '#9ca3af' }}>This device does not report SNMP health sensors (temperature, voltage, fans, etc.).</div>
             </div>
-          ) : (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px,1fr))', gap: 12 }}>
-              {health.sensors.map((sensor, i) => {
-                const val = parseFloat(sensor.sensor_current);
-                const lim = parseFloat(sensor.sensor_limit);
-                const pct = lim > 0 && !isNaN(val) ? Math.min(100, Math.round((val / lim) * 100)) : null;
-                const warnPct = sensor.sensor_limit_warn && lim > 0 ? Math.round((parseFloat(sensor.sensor_limit_warn) / lim) * 100) : 75;
-                const barColor = pct !== null ? (pct >= warnPct ? '#ef4444' : pct >= 50 ? '#f59e0b' : accent) : accent;
-                const unit = sensor.sensor_unit || (sensor.sensor_class === 'temperature' ? '°C' : sensor.sensor_class === 'voltage' ? 'V' : sensor.sensor_class === 'fanspeed' ? 'RPM' : sensor.sensor_class === 'current' ? 'A' : sensor.sensor_class === 'dbm' ? 'dBm' : '');
-                return (
-                  <div key={sensor.sensor_id ?? i} style={{ background: '#fff', borderRadius: 10, border: '1px solid #e8ecf0', padding: '14px 16px' }}>
-                    <div style={{ fontSize: 10, fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>
-                      {sensor.sensor_class || 'Sensor'}
-                    </div>
-                    <div style={{ fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 6 }}>
-                      {sensor.sensor_descr || `Sensor #${sensor.sensor_id}`}
-                    </div>
-                    <div style={{ fontSize: 22, fontWeight: 700, color: barColor, marginBottom: 8 }}>
-                      {sensor.sensor_current ?? '—'}{unit && <span style={{ fontSize: 13, marginLeft: 3 }}>{unit}</span>}
-                    </div>
-                    {pct !== null && (
-                      <div style={{ background: '#f0f2f5', borderRadius: 4, height: 5, marginBottom: 4 }}>
-                        <div style={{ width: `${pct}%`, height: '100%', borderRadius: 4, background: barColor, transition: 'width 0.4s' }} />
+          ) : (() => {
+            const STATE_LABELS = { 0:'OK', 1:'OK', 2:'Warning', 3:'Critical', 4:'Shutdown', 5:'Missing', 6:'Error', 7:'Charging', 8:'N/A', 9:'Backing Up' };
+            const STATE_COLORS = { 0:'#22c55e', 1:'#22c55e', 2:'#f59e0b', 3:'#ef4444', 4:'#ef4444', 5:'#9ca3af', 6:'#ef4444', 7:'#3b82f6', 8:'#9ca3af', 9:'#f59e0b' };
+            const UNITS = { temperature:'°C', voltage:'V', current:'A', dbm:'dBm', fanspeed:'RPM', percent:'%', charge:'%' };
+            const GROUP_LABELS = { temperature:'🌡 Temperature', voltage:'⚡ Voltage', current:'🔌 Current (SFP Bias)', dbm:'📡 Optical Power (dBm)', state:'🔧 Status', count:'🔢 Count', fanspeed:'💨 Fan Speed', charge:'🔋 Battery Charge' };
+
+            const groups = {};
+            health.sensors.forEach(s => {
+              const g = s.sensor_class || 'other';
+              if (!groups[g]) groups[g] = [];
+              groups[g].push(s);
+            });
+
+            const ORDER = ['temperature','state','voltage','current','dbm','fanspeed','charge','count'];
+            const sorted = [...ORDER.filter(k => groups[k]), ...Object.keys(groups).filter(k => !ORDER.includes(k))];
+
+            return sorted.map(cls => (
+              <Section key={cls} title={GROUP_LABELS[cls] || cls}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px,1fr))', gap: 10, padding: '12px 16px' }}>
+                  {groups[cls].map((sensor, i) => {
+                    const val = parseFloat(sensor.sensor_current);
+                    const lim = parseFloat(sensor.sensor_limit);
+                    const unit = UNITS[cls] || '';
+                    const isState = cls === 'state';
+                    const stateVal = Math.round(val);
+                    const stateLabel = isState ? (STATE_LABELS[stateVal] ?? `State ${stateVal}`) : null;
+                    const stateColor = isState ? (STATE_COLORS[stateVal] ?? '#9ca3af') : null;
+                    const pct = !isState && lim > 0 && !isNaN(val) ? Math.min(100, Math.round((val / lim) * 100)) : null;
+                    const warnPct = sensor.sensor_limit_warn && lim > 0 ? Math.round((parseFloat(sensor.sensor_limit_warn) / lim) * 100) : 75;
+                    const barColor = pct !== null ? (pct >= warnPct ? '#ef4444' : pct >= 60 ? '#f59e0b' : accent) : accent;
+                    const descr = (sensor.sensor_descr || '').replace(/^(SfpTemp|SfpVolt|SfpRxDbm|SfpTxDbm|SfpTxBias)-?/, '') || sensor.sensor_descr || `#${sensor.sensor_id}`;
+                    return (
+                      <div key={sensor.sensor_id ?? i} style={{ background: '#f8fafc', borderRadius: 8, border: `1px solid ${isState ? stateColor + '33' : '#e8ecf0'}`, padding: '12px 14px' }}>
+                        <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          {descr || `Sensor #${sensor.sensor_id}`}
+                        </div>
+                        {isState ? (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <div style={{ width: 10, height: 10, borderRadius: '50%', background: stateColor, flexShrink: 0 }} />
+                            <span style={{ fontSize: 16, fontWeight: 700, color: stateColor }}>{stateLabel}</span>
+                          </div>
+                        ) : (
+                          <>
+                            <div style={{ fontSize: 20, fontWeight: 700, color: barColor }}>
+                              {isNaN(val) ? '—' : val.toFixed(val % 1 === 0 ? 0 : 2)}
+                              <span style={{ fontSize: 12, fontWeight: 400, marginLeft: 3, color: '#6b7280' }}>{unit}</span>
+                            </div>
+                            {pct !== null && (
+                              <div style={{ background: '#e5e7eb', borderRadius: 4, height: 4, marginTop: 8 }}>
+                                <div style={{ width: `${pct}%`, height: '100%', borderRadius: 4, background: barColor, transition: 'width 0.4s' }} />
+                              </div>
+                            )}
+                            {(sensor.sensor_limit || sensor.sensor_limit_warn) && (
+                              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 3, fontSize: 9, color: '#9ca3af' }}>
+                                <span>Warn: {sensor.sensor_limit_warn ?? '—'}</span>
+                                <span>Limit: {sensor.sensor_limit ?? '—'}</span>
+                              </div>
+                            )}
+                          </>
+                        )}
                       </div>
-                    )}
-                    {(sensor.sensor_limit || sensor.sensor_limit_warn) && (
-                      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 2, fontSize: 9, color: '#9ca3af' }}>
-                        <span>Warn: {sensor.sensor_limit_warn ?? '—'}</span>
-                        <span>Limit: {sensor.sensor_limit ?? '—'}</span>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
+                    );
+                  })}
+                </div>
+              </Section>
+            ));
+          })()
+          }
         </div>
       )}
 
