@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { getDevices, getAlerts, getPorts, getLogs, getDeviceRelationships } from '../api';
+import { getDevices, getAlerts, getPorts, getLogs, getDeviceRelationships, getPollerQueue, getAnomalyStats, getAlertHistogram } from '../api';
 
 const REFRESH_MS = 60_000;
 
@@ -52,9 +52,10 @@ const SevBadge = ({ sev }) => {
 };
 
 // ─── Stat Card ─────────────────────────────────────────────────────
-const StatCard = ({ label, value, subtitle, subtitleColor = '#6b7280', icon, topColor, loading }) => (
-  <div style={{ flex: '1 1 160px', minWidth: 140, background: '#fff', borderRadius: 12,
-    border: '1px solid #e8ecf0', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+const StatCard = ({ label, value, subtitle, subtitleColor = '#6b7280', icon, topColor, loading, onClick }) => (
+  <div onClick={onClick} style={{ flex: '1 1 160px', minWidth: 140, background: '#fff', borderRadius: 12,
+    border: '1px solid #e8ecf0', overflow: 'hidden', display: 'flex', flexDirection: 'column',
+    cursor: onClick ? 'pointer' : 'default' }}>
     <div style={{ height: 3, background: topColor }} />
     <div style={{ padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 6, flex: 1 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
@@ -185,14 +186,15 @@ const Donut = ({ total, up, down, warn, unknown }) => {
 };
 
 // ─── Circular health gauge ─────────────────────────────────────────
-const HealthGauge = ({ pct, label, name }) => {
+const HealthGauge = ({ pct, label, name, onClick }) => {
   const r = 28, cx = 34, cy = 34, stroke = 6;
   const circ = 2 * Math.PI * r;
   const filled = (pct / 100) * circ;
   const color = pct >= 80 ? '#ef4444' : pct >= 60 ? '#f59e0b' : '#22c55e';
   const status = pct >= 80 ? 'HIGH' : pct >= 60 ? 'MED' : 'OK';
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+    <div onClick={onClick} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4,
+      cursor: onClick ? 'pointer' : 'default' }}>
       <svg viewBox="0 0 68 68" style={{ width: 68, height: 68 }}>
         <circle cx={cx} cy={cy} r={r} fill="none" stroke="#f0f2f5" strokeWidth={stroke} />
         <circle cx={cx} cy={cy} r={r} fill="none" stroke={color} strokeWidth={stroke}
@@ -208,7 +210,7 @@ const HealthGauge = ({ pct, label, name }) => {
 };
 
 // ─── Network Topology SVG (real devices + real hierarchy) ────────
-const Topology = ({ devices, relationships }) => {
+const Topology = ({ devices, relationships, onSelectDevice }) => {
   const devList = devices || [];
   const rels    = relationships || [];
 
@@ -274,17 +276,21 @@ const Topology = ({ devices, relationships }) => {
           ? <line key={i} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="#d1d5db" strokeWidth={1.2} />
           : null
       ))}
-      {allNodes.map(n => (
-        <g key={n.id}>
-          <circle cx={n.x} cy={n.y} r={n.r} fill={n.bg} />
-          <text x={n.x} y={n.y + n.fs * 0.4} textAnchor="middle" fontSize={n.fs} fill={n.fg} fontWeight={700}>
-            {n.id === '__internet' ? 'NET' : n.id === '__core' ? 'CORE' : n.label.split('-')[0]}
-          </text>
-          <text x={n.x} y={n.y + n.r + 10} textAnchor="middle" fontSize={7.5} fill="#374151" fontWeight={600}>
-            {n.label.length > 15 ? n.label.slice(0, 14) + '…' : n.label}
-          </text>
-        </g>
-      ))}
+      {allNodes.map(n => {
+        const isClickable = n.id !== '__internet' && n.id !== '__core' && onSelectDevice;
+        return (
+          <g key={n.id} style={{ cursor: isClickable ? 'pointer' : 'default' }}
+            onClick={() => isClickable && onSelectDevice(n.id)}>
+            <circle cx={n.x} cy={n.y} r={n.r} fill={n.bg} />
+            <text x={n.x} y={n.y + n.fs * 0.4} textAnchor="middle" fontSize={n.fs} fill={n.fg} fontWeight={700}>
+              {n.id === '__internet' ? 'NET' : n.id === '__core' ? 'CORE' : n.label.split('-')[0]}
+            </text>
+            <text x={n.x} y={n.y + n.r + 10} textAnchor="middle" fontSize={7.5} fill="#374151" fontWeight={600}>
+              {n.label.length > 15 ? n.label.slice(0, 14) + '…' : n.label}
+            </text>
+          </g>
+        );
+      })}
     </svg>
   );
 };
@@ -380,6 +386,98 @@ const Heatmap = ({ devices, ports }) => {
   );
 };
 
+// ─── Poller Health Bar ────────────────────────────────────────────
+const PollerHealthBar = ({ data, loading, onClick }) => {
+  if (loading) return (
+    <div style={{ background: '#fff', borderRadius: 10, border: '1px solid #e8ecf0',
+      padding: '8px 18px', display: 'flex', gap: 16, alignItems: 'center' }}>
+      {[1,2,3,4].map(i => <Sk key={i} w={90} h={12} r={4} />)}
+    </div>
+  );
+
+  const failed  = data?.failed  ?? 0;
+  const stale   = data?.stale   ?? 0;
+  const pending = data?.pending ?? 0;
+  const proc    = data?.processing ?? 0;
+  const lastPoll = data?.last_poll;
+
+  const isErr  = failed > 0;
+  const isWarn = stale > 0 || pending > 10;
+  const color  = isErr ? '#ef4444' : isWarn ? '#f59e0b' : '#22c55e';
+  const label  = isErr ? 'ERROR' : isWarn ? 'WARN' : 'OK';
+
+  const ago = lastPoll ? timeAgo(lastPoll) : '—';
+
+  const dot = (c) => (
+    <span style={{ width: 8, height: 8, borderRadius: '50%', background: c,
+      display: 'inline-block', marginRight: 5, flexShrink: 0 }} />
+  );
+  const item = (label, val, warn = false) => (
+    <span style={{ fontSize: 11, color: warn ? '#d97706' : '#374151', display: 'flex', alignItems: 'center' }}>
+      {warn && dot('#f59e0b')}{label}: <strong style={{ marginLeft: 4, color: warn ? '#d97706' : '#111827' }}>{val}</strong>
+    </span>
+  );
+
+  return (
+    <div onClick={onClick} style={{ background: '#fff', borderRadius: 10, border: `1px solid ${color}30`,
+      padding: '8px 18px', display: 'flex', gap: 20, alignItems: 'center', cursor: 'pointer',
+      boxShadow: isErr ? `0 0 0 2px ${color}20` : 'none' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+        {dot(color)}
+        <span style={{ fontSize: 11, fontWeight: 700, color, letterSpacing: '0.06em' }}>POLLER {label}</span>
+      </div>
+      <div style={{ width: 1, height: 14, background: '#e8ecf0' }} />
+      {item('Pending',    pending,  pending > 10)}
+      {item('Processing', proc)}
+      {item('Failed',     failed,   failed > 0)}
+      {item('Stale',      stale,    stale > 0)}
+      <div style={{ width: 1, height: 14, background: '#e8ecf0' }} />
+      <span style={{ fontSize: 11, color: '#9ca3af' }}>Last poll: <strong style={{ color: '#374151' }}>{ago}</strong></span>
+    </div>
+  );
+};
+
+// ─── Alert Timeline (24h bar chart) ──────────────────────────────
+const AlertTimeline = ({ histogram, loading, onClick }) => {
+  if (loading) return (
+    <div style={{ display: 'flex', alignItems: 'flex-end', gap: 3, height: 60, padding: '0 4px' }}>
+      {Array.from({ length: 24 }, (_, i) => (
+        <Sk key={i} w="100%" h={Math.random() * 40 + 8} r={2} />
+      ))}
+    </div>
+  );
+
+  const data = histogram || [];
+  const maxVal = Math.max(...data.map(d => (d.critical || 0) + (d.warning || 0) + (d.info || 0)), 1);
+
+  return (
+    <div onClick={onClick} style={{ cursor: 'pointer' }}>
+      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 2, height: 68 }}>
+        {data.map((d, i) => {
+          const total = (d.critical || 0) + (d.warning || 0) + (d.info || 0);
+          const pct   = (total / maxVal) * 100;
+          const color = d.critical > 0 ? '#ef4444' : d.warning > 0 ? '#f59e0b' : '#3b82f6';
+          return (
+            <div key={i} title={`${d.hour}: ${total} alert`}
+              style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', height: '100%' }}>
+              <div style={{ height: `${Math.max(pct, total > 0 ? 6 : 2)}%`,
+                background: total > 0 ? color : '#f0f2f5',
+                borderRadius: '2px 2px 0 0', transition: 'height 0.4s', minHeight: 2 }} />
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4 }}>
+        {[0, 6, 12, 18, 23].map(i => (
+          <span key={i} style={{ fontSize: 8.5, color: '#9ca3af' }}>
+            {data[i]?.hour ?? `${String(i).padStart(2,'0')}:00`}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+};
+
 // ─── Event icon ───────────────────────────────────────────────────
 const EventIcon = ({ type }) => {
   const cfg = {
@@ -395,13 +493,16 @@ const EventIcon = ({ type }) => {
 };
 
 // ─── Main ─────────────────────────────────────────────────────────
-const DashboardPage = ({ accent = '#22c55e' }) => {
+const DashboardPage = ({ accent = '#22c55e', onNav = () => {}, onSelectDevice = () => {} }) => {
   const [devices,       setDevices]       = useState(null);
   const [alerts,        setAlerts]        = useState(null);
   const [ports,         setPorts]         = useState(null);
   const [events,        setEvents]        = useState(null);
   const [relationships, setRelationships] = useState([]);
   const [traffic,       setTraffic]       = useState([]);
+  const [pollerQueue,   setPollerQueue]   = useState(null);
+  const [anomalyStats,  setAnomalyStats]  = useState(null);
+  const [alertHist,     setAlertHist]     = useState(null);
   const [updatedAt,     setUpdatedAt]     = useState(nowLabel());
   const trafficRef = useRef([]);
 
@@ -412,6 +513,9 @@ const DashboardPage = ({ accent = '#22c55e' }) => {
     getAlerts().then(setAlerts).catch(() => setAlerts([]));
     getLogs(20).then(setEvents).catch(() => setEvents([]));
     getDeviceRelationships().then(setRelationships).catch(() => setRelationships([]));
+    getPollerQueue().then(setPollerQueue).catch(() => setPollerQueue({}));
+    getAnomalyStats().then(setAnomalyStats).catch(() => setAnomalyStats({}));
+    getAlertHistogram().then(setAlertHist).catch(() => setAlertHist([]));
 
     getPorts().then(pts => {
       setPorts(pts);
@@ -461,7 +565,7 @@ const DashboardPage = ({ accent = '#22c55e' }) => {
     const cap  = dp.filter(p => p.ifOperStatus === 'up').reduce((s, p) => s + (p.ifSpeed || 1e9), 0);
     const rate = dp.reduce((s, p) => s + (p.ifInOctets_rate || 0) + (p.ifOutOctets_rate || 0), 0);
     const pct  = cap > 0 ? Math.min(100, Math.round((rate * 8 / cap) * 100)) : 0;
-    return { name: d.display || d.sysName || d.hostname, pct };
+    return { name: d.display || d.sysName || d.hostname, hostname: d.hostname, pct };
   });
 
   // Sites: built from real devices, city extracted from sysName pattern
@@ -510,6 +614,7 @@ const DashboardPage = ({ accent = '#22c55e' }) => {
           subtitle={`↑ ${totalDev ? ((upDev / totalDev) * 100).toFixed(1) : 0}% of total`}
           subtitleColor="#22c55e" topColor="#22c55e"
           icon={<IcoCheck c="#22c55e" s={14} />}
+          onClick={() => onNav('devices')}
         />
         <StatCard
           label="Devices Down" loading={devices === null}
@@ -517,6 +622,7 @@ const DashboardPage = ({ accent = '#22c55e' }) => {
           subtitle={downDev > 0 ? 'Needs attention' : 'All reachable'}
           subtitleColor={downDev > 0 ? '#ef4444' : '#6b7280'} topColor="#ef4444"
           icon={<IcoX c="#ef4444" s={14} />}
+          onClick={() => onNav('devices')}
         />
         <StatCard
           label="Warnings" loading={devices === null}
@@ -524,6 +630,7 @@ const DashboardPage = ({ accent = '#22c55e' }) => {
           subtitle="High resource usage"
           subtitleColor="#f59e0b" topColor="#f59e0b"
           icon={<IcoWarn c="#f59e0b" s={14} />}
+          onClick={() => onNav('alerts')}
         />
         <StatCard
           label="Total Traffic" loading={ports === null}
@@ -531,6 +638,7 @@ const DashboardPage = ({ accent = '#22c55e' }) => {
           subtitle={lastT ? `↑ ${lastT.in} Mbps in · ${lastT.out} Mbps out` : 'Collecting…'}
           subtitleColor="#3b82f6" topColor="#3b82f6"
           icon={<IcoTraffic c="#3b82f6" s={14} />}
+          onClick={() => onNav('ports')}
         />
         <StatCard
           label="Active Alerts" loading={alerts === null}
@@ -538,6 +646,7 @@ const DashboardPage = ({ accent = '#22c55e' }) => {
           subtitle={critAlerts.length > 0 ? `${critAlerts.length} critical` : 'No critical'}
           subtitleColor={critAlerts.length > 0 ? '#ef4444' : '#22c55e'} topColor="#1e293b"
           icon={<IcoAlert c="#1e293b" s={14} />}
+          onClick={() => onNav('alerts')}
         />
         <StatCard
           label="Network Uptime" loading={devices === null}
@@ -545,8 +654,27 @@ const DashboardPage = ({ accent = '#22c55e' }) => {
           subtitle="↑ Last 30 days"
           subtitleColor="#0d9488" topColor="#0d9488"
           icon={<IcoUptime c="#0d9488" s={14} />}
+          onClick={() => onNav('devices')}
+        />
+        <StatCard
+          label="Anomalies 24h" loading={anomalyStats === null}
+          value={anomalyStats?.stats?.anomalies_24h ?? '—'}
+          subtitle={anomalyStats?.stats?.critical_7d > 0
+            ? `${anomalyStats.stats.critical_7d} critical 7d`
+            : 'No anomalies detected'}
+          subtitleColor={anomalyStats?.stats?.critical_7d > 0 ? '#ef4444' : '#6b7280'}
+          topColor="#8b5cf6"
+          icon={<Ico color="#8b5cf6" size={14} sw={1.8} d={<><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></>} />}
+          onClick={() => onNav('anomaly')}
         />
       </div>
+
+      {/* ── Poller Health Bar ─────────────────────────────────────── */}
+      <PollerHealthBar
+        data={pollerQueue}
+        loading={pollerQueue === null}
+        onClick={() => onNav('pollers')}
+      />
 
       {/* ── Row 2: Traffic chart + Active Alerts ─────────────────── */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 380px', gap: 14 }}>
@@ -565,7 +693,7 @@ const DashboardPage = ({ accent = '#22c55e' }) => {
                   <span style={{ width: 18, height: 2, background: c, display: 'inline-block', borderRadius: 1 }} />{l}
                 </span>
               ))}
-              <a style={linkStyle}>Full report →</a>
+              <a style={linkStyle} onClick={() => onNav('ports')}>Full report →</a>
             </div>
           </div>
           <div style={{ padding: '14px 8px 8px' }}>
@@ -573,7 +701,7 @@ const DashboardPage = ({ accent = '#22c55e' }) => {
           </div>
         </div>
 
-        {/* Active Alerts */}
+        {/* Active Alerts + Timeline */}
         <div style={card}>
           <div style={{ padding: '14px 18px', borderBottom: '1px solid #f5f5f5',
             display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -582,7 +710,22 @@ const DashboardPage = ({ accent = '#22c55e' }) => {
                 animation: 'pulse 1.5s infinite' }} />
               <span style={sectionTitle}>Active Alerts</span>
             </div>
-            <a style={linkStyle}>View all →</a>
+            <a style={linkStyle} onClick={() => onNav('alerts')}>View all →</a>
+          </div>
+          {/* 24h timeline */}
+          <div style={{ padding: '10px 18px 6px', borderBottom: '1px solid #f5f5f5' }}>
+            <div style={{ fontSize: 10, color: '#9ca3af', fontWeight: 600, marginBottom: 6,
+              display: 'flex', justifyContent: 'space-between' }}>
+              <span>Alert Timeline · 24h</span>
+              <div style={{ display: 'flex', gap: 8 }}>
+                {[['#ef4444','Critical'],['#f59e0b','Warning'],['#3b82f6','Info']].map(([c,l]) => (
+                  <span key={l} style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                    <span style={{ width: 8, height: 8, borderRadius: 2, background: c, display: 'inline-block' }} />{l}
+                  </span>
+                ))}
+              </div>
+            </div>
+            <AlertTimeline histogram={alertHist} loading={alertHist === null} onClick={() => onNav('alerts')} />
           </div>
           <div style={{ display: 'flex', flexDirection: 'column' }}>
             {alerts === null
@@ -600,8 +743,9 @@ const DashboardPage = ({ accent = '#22c55e' }) => {
                     const sev = a.severity || 'warning';
                     const dotColor = sev === 'critical' ? '#ef4444' : sev === 'warning' ? '#f59e0b' : '#3b82f6';
                     return (
-                      <div key={a.id || i} style={{ padding: '10px 18px', borderBottom: '1px solid #f9fafb',
-                        display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                      <div key={a.id || i} onClick={() => onNav('alerts')}
+                        style={{ padding: '10px 18px', borderBottom: '1px solid #f9fafb',
+                        display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer' }}>
                         <span style={{ fontSize: 10, color: '#9ca3af', minWidth: 42, paddingTop: 2 }}>
                           {timeAgo(a.timestamp)}
                         </span>
@@ -633,7 +777,7 @@ const DashboardPage = ({ accent = '#22c55e' }) => {
               <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#22c55e' }} />
               <span style={sectionTitle}>Device Status</span>
             </div>
-            <a style={linkStyle}>Details →</a>
+            <a style={linkStyle} onClick={() => onNav('devices')}>Details →</a>
           </div>
           <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14 }}>
             {devices === null
@@ -665,10 +809,10 @@ const DashboardPage = ({ accent = '#22c55e' }) => {
               <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#3b82f6' }} />
               <span style={sectionTitle}>Network Topology</span>
             </div>
-            <a style={linkStyle}>Full map →</a>
+            <a style={linkStyle} onClick={() => onNav('topology')}>Full map →</a>
           </div>
           <div style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'center', height: 290 }}>
-            <Topology devices={devices} relationships={relationships} />
+            <Topology devices={devices} relationships={relationships} onSelectDevice={onSelectDevice} />
           </div>
         </div>
 
@@ -684,7 +828,7 @@ const DashboardPage = ({ accent = '#22c55e' }) => {
           <div style={{ padding: '16px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
             {devices === null
               ? [1,2,3,4,5].map(i => <div key={i} style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:6 }}><Sk w={68} h={68} r={34} /><Sk w={60} h={10} /></div>)
-              : healthDevs.map((d, i) => <HealthGauge key={i} pct={d.pct} name={d.name} />)
+              : healthDevs.map((d, i) => <HealthGauge key={i} pct={d.pct} name={d.name} onClick={() => onSelectDevice(d.hostname)} />)
             }
           </div>
         </div>
@@ -700,7 +844,7 @@ const DashboardPage = ({ accent = '#22c55e' }) => {
               <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#f97316' }} />
               <span style={sectionTitle}>Traffic Heatmap · 24h</span>
             </div>
-            <a style={linkStyle}>View all →</a>
+            <a style={linkStyle} onClick={() => onNav('ports')}>View all →</a>
           </div>
           <div style={{ padding: '16px' }}>
             <Heatmap devices={devices} ports={ports} />
@@ -715,7 +859,7 @@ const DashboardPage = ({ accent = '#22c55e' }) => {
               <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#6366f1' }} />
               <span style={sectionTitle}>Event Log</span>
             </div>
-            <a style={linkStyle}>All events →</a>
+            <a style={linkStyle} onClick={() => onNav('logs')}>All events →</a>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column' }}>
             {events === null
@@ -728,8 +872,10 @@ const DashboardPage = ({ accent = '#22c55e' }) => {
               : events.length === 0
                 ? <div style={{ padding: 24, textAlign: 'center', color: '#9ca3af', fontSize: 12 }}>No events</div>
                 : events.slice(0, 7).map((e, i) => (
-                    <div key={e.event_id || i} style={{ padding: '9px 16px',
-                      borderBottom: '1px solid #f9fafb', display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                    <div key={e.event_id || i}
+                      onClick={() => e.hostname ? onSelectDevice(e.hostname) : onNav('logs')}
+                      style={{ padding: '9px 16px', borderBottom: '1px solid #f9fafb',
+                      display: 'flex', gap: 10, alignItems: 'flex-start', cursor: 'pointer' }}>
                       <EventIcon type={evType(e)} />
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: 11.5, color: '#111827', fontWeight: 500,
@@ -758,12 +904,13 @@ const DashboardPage = ({ accent = '#22c55e' }) => {
                 <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#22c55e' }} />
                 <span style={sectionTitle}>Sites Overview</span>
               </div>
-              <a style={linkStyle}>Map →</a>
+              <a style={linkStyle} onClick={() => onNav('topology')}>Map →</a>
             </div>
             <div style={{ padding: '10px 14px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
               {sites.map((s, i) => (
-                <div key={i} style={{ padding: '10px 10px', background: '#fafafa', borderRadius: 8,
-                  border: '1px solid #f0f2f5' }}>
+                <div key={i} onClick={() => onNav('devices')}
+                  style={{ padding: '10px 10px', background: '#fafafa', borderRadius: 8,
+                  border: '1px solid #f0f2f5', cursor: 'pointer' }}>
                   <div style={{ fontSize: 11, fontWeight: 700, color: '#111827', marginBottom: 2 }}>{s.name}</div>
                   <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 6 }}>
                     Devices: <strong style={{ color: s.color }}>{s.pct}%</strong>
@@ -798,7 +945,8 @@ const DashboardPage = ({ accent = '#22c55e' }) => {
                       const inPct   = Math.min(100, Math.round((inMbps / maxMbps) * 100));
                       const outPct  = Math.min(100, Math.round((outMbps / maxMbps) * 100));
                       return (
-                        <div key={i}>
+                        <div key={i} onClick={() => p.hostname ? onSelectDevice(p.hostname) : onNav('ports')}
+                          style={{ cursor: 'pointer' }}>
                           <div style={{ display: 'flex', justifyContent: 'space-between',
                             fontSize: 11, fontWeight: 600, color: '#111827', marginBottom: 4 }}>
                             <span style={{ fontFamily: 'monospace' }}>{p.hostname ? `${p.hostname.split('.')[0]} ` : ''}{p.ifName}</span>

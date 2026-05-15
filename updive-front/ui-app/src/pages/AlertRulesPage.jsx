@@ -3,7 +3,7 @@ import { Icon, PageHeader } from '../components/Charts';
 import {
   getAlertRulesV2, getAlertRuleV2,
   updateAlertRuleV2, deleteAlertRuleV2, toggleAlertRuleV2,
-  createAlertRuleV1,
+  createAlertRuleV1, testAlertRule,
 } from '../api';
 
 // ─── Tokens ────────────────────────────────────────────────────────
@@ -197,42 +197,147 @@ const DetailPanel = ({ id, onClose, accent }) => {
   );
 };
 
-// ─── Rule Form Modal ───────────────────────────────────────────────
+// ─── Rule Form Modal — Template + Visual Builder + Test ───────────
+
+const TEMPLATES = [
+  { icon: '📡', label: 'Device Down',     severity: 'critical', query: 'devices.status = 0',                                              name: 'Device Down' },
+  { icon: '🔥', label: 'CPU Critical',    severity: 'critical', query: 'processors.processor_usage > 95',                                 name: 'CPU Critical (>95%)' },
+  { icon: '⚠️', label: 'CPU High',        severity: 'warning',  query: 'processors.processor_usage > 80',                                 name: 'CPU High (>80%)' },
+  { icon: '💾', label: 'Memory Full',     severity: 'critical', query: 'mempools.mempool_perc > 95',                                      name: 'Memory Full (>95%)' },
+  { icon: '💾', label: 'Memory High',     severity: 'warning',  query: 'mempools.mempool_perc > 85',                                      name: 'Memory High (>85%)' },
+  { icon: '🔌', label: 'Port Down',       severity: 'warning',  query: 'ports.ifOperStatus = "down" AND ports.ifAdminStatus = "up"',      name: 'Port Down (Admin Up)' },
+  { icon: '↕️', label: 'Half Duplex',     severity: 'warning',  query: 'ports.ifDuplex = "half"',                                        name: 'Port Half Duplex' },
+  { icon: '🌡️', label: 'Sensor Alert',   severity: 'warning',  query: 'sensors.sensor_alert = 1',                                       name: 'Sensor Alert' },
+];
+
+const FIELDS = [
+  { key: 'devices.status',               label: 'Device Status',        type: 'enum',   opts: [['0','Down'],['1','Up']] },
+  { key: 'devices.uptime',               label: 'Device Uptime (sec)',   type: 'number' },
+  { key: 'processors.processor_usage',   label: 'CPU Usage (%)',         type: 'number' },
+  { key: 'mempools.mempool_perc',        label: 'Memory Usage (%)',      type: 'number' },
+  { key: 'ports.ifOperStatus',           label: 'Port Oper Status',      type: 'enum',   opts: [['up','Up'],['down','Down']] },
+  { key: 'ports.ifAdminStatus',          label: 'Port Admin Status',     type: 'enum',   opts: [['up','Up'],['down','Down']] },
+  { key: 'ports.ifDuplex',               label: 'Port Duplex',           type: 'enum',   opts: [['full','Full'],['half','Half'],['unknown','Unknown']] },
+  { key: 'ports.ifSpeed',                label: 'Port Speed (bps)',      type: 'number' },
+  { key: 'sensors.sensor_alert',         label: 'Sensor Alert',          type: 'enum',   opts: [['0','Normal'],['1','Alert']] },
+  { key: 'sensors.sensor_current',       label: 'Sensor Value',          type: 'number' },
+];
+const NUM_OPS  = ['>','>=','<','<=','=','!='];
+const ENUM_OPS = ['=','!='];
+
+const defaultOp   = (fk) => FIELDS.find(f => f.key === fk)?.type === 'enum' ? '=' : '>';
+const defaultVal  = (fk) => FIELDS.find(f => f.key === fk)?.opts?.[0]?.[0] ?? '';
+const mkCond      = (fk = FIELDS[0].key) => ({ field: fk, op: defaultOp(fk), value: defaultVal(fk), connector: 'AND' });
+
+const buildQuery = (conds) =>
+  conds.filter(c => c.field && c.op && c.value !== '').map((c, i) => {
+    const f   = FIELDS.find(x => x.key === c.field);
+    const val = f?.type === 'enum' ? `"${c.value}"` : c.value;
+    return (i === 0 ? '' : ` ${c.connector} `) + `${c.field} ${c.op} ${val}`;
+  }).join('');
+
+const parseQuery = (q) => {
+  if (!q) return [mkCond()];
+  const parts = q.split(/\s+(AND|OR)\s+/i);
+  const conds = [];
+  let connector = 'AND';
+  parts.forEach(p => {
+    if (p.toUpperCase() === 'AND' || p.toUpperCase() === 'OR') { connector = p.toUpperCase(); return; }
+    const m = p.trim().match(/^(\S+)\s*(=|!=|>=|<=|>|<)\s*"?([^"]*)"?$/);
+    if (m && FIELDS.find(f => f.key === m[1])) {
+      conds.push({ field: m[1], op: m[2], value: m[3], connector });
+      connector = 'AND';
+    }
+  });
+  return conds.length ? conds : [mkCond()];
+};
+
 const EMPTY = { name: '', severity: 'warning', query: '', notes: '', disabled: false, invert_map: false, confirm_count: 1, delay_min: 0 };
 
 const RuleModal = ({ initial, onSave, onClose, accent }) => {
-  const [form, setForm] = useState(initial ?? EMPTY);
-  const [saving, setSaving] = useState(false);
-  const [err, setErr] = useState('');
+  const isEdit = !!initial;
+  const [form,        setForm]        = useState(initial ?? EMPTY);
+  const [mode,        setMode]        = useState('visual');
+  const [conds,       setConds]       = useState(() => parseQuery(initial?.query));
+  const [showTpl,     setShowTpl]     = useState(!isEdit);
+  const [saving,      setSaving]      = useState(false);
+  const [testing,     setTesting]     = useState(false);
+  const [testResult,  setTestResult]  = useState(null);
+  const [err,         setErr]         = useState('');
 
-  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const set = (k, v) => { setForm(f => ({ ...f, [k]: v })); setTestResult(null); };
+
+  // Keep form.query in sync with visual builder
+  useEffect(() => {
+    if (mode === 'visual') set('query', buildQuery(conds));
+  }, [conds, mode]);
+
+  const applyTemplate = (tpl) => {
+    setForm(f => ({ ...f, name: f.name || tpl.name, severity: tpl.severity, query: tpl.query }));
+    const parsed = parseQuery(tpl.query);
+    setConds(parsed);
+    setMode(parsed.length > 0 ? 'visual' : 'advanced');
+    setShowTpl(false);
+    setTestResult(null);
+  };
+
+  const switchMode = (next) => {
+    if (next === 'advanced') {
+      setMode('advanced');
+    } else {
+      setConds(parseQuery(form.query));
+      setMode('visual');
+    }
+    setTestResult(null);
+  };
+
+  const updateCond = (i, patch) => {
+    setConds(cs => cs.map((c, idx) => {
+      if (idx !== i) return c;
+      const next = { ...c, ...patch };
+      if (patch.field) {
+        next.op    = defaultOp(patch.field);
+        next.value = defaultVal(patch.field);
+      }
+      return next;
+    }));
+  };
+
+  const handleTest = async () => {
+    const q = form.query.trim();
+    if (!q) { setErr('Query is required.'); return; }
+    setTesting(true); setTestResult(null); setErr('');
+    try { setTestResult(await testAlertRule(q)); }
+    catch (e) { setTestResult({ status: 'error', message: e.response?.data?.message ?? 'Test failed.' }); }
+    finally { setTesting(false); }
+  };
 
   const submit = async () => {
     if (!form.name.trim()) { setErr('Name is required.'); return; }
     if (!form.query.trim()) { setErr('Query is required.'); return; }
     setSaving(true); setErr('');
-    try {
-      await onSave(form);
-      onClose();
-    } catch (e) {
-      const msg = e.response?.data?.message ?? e.response?.data?.errors
-        ? Object.values(e.response.data.errors).flat().join(' ')
-        : 'Save failed.';
-      setErr(msg);
+    try { await onSave(form); onClose(); }
+    catch (e) {
+      setErr(e.response?.data?.message
+        ?? (e.response?.data?.errors ? Object.values(e.response.data.errors).flat().join(' ') : 'Save failed.'));
     } finally { setSaving(false); }
   };
+
+  const selStyle = { padding: '6px 8px', borderRadius: 6, border: '1px solid #e5e7eb',
+    fontSize: 12, outline: 'none', fontFamily: 'inherit', color: '#111827', background: '#fff' };
 
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 400, display: 'flex',
       alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,.4)' }}>
-      <div style={{ width: 520, background: '#fff', borderRadius: 12, boxShadow: '0 20px 60px rgba(0,0,0,.18)',
-        display: 'flex', flexDirection: 'column', maxHeight: '90vh' }}>
+      <div style={{ width: 560, background: '#fff', borderRadius: 12,
+        boxShadow: '0 20px 60px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', maxHeight: '92vh' }}>
+
         {/* Header */}
         <div style={{ padding: '16px 20px', borderBottom: '1px solid #e8ecf0',
-          display: 'flex', alignItems: 'center', gap: 10 }}>
+          display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
           <Icon name="alerts" size={15} color={accent} />
           <span style={{ fontSize: 14, fontWeight: 700, color: '#111827', flex: 1 }}>
-            {initial ? 'Edit Rule' : 'New Alert Rule'}
+            {isEdit ? 'Edit Rule' : 'New Alert Rule'}
           </span>
           <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#9ca3af' }}>
             <Icon name="xCircle" size={16} />
@@ -241,98 +346,229 @@ const RuleModal = ({ initial, onSave, onClose, accent }) => {
 
         {/* Body */}
         <div style={{ padding: 20, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 14 }}>
-          {err && (
-            <div style={{ padding: '8px 12px', background: '#fef2f2', border: '1px solid #fecaca',
-              borderRadius: 7, fontSize: 12, color: '#dc2626' }}>{err}</div>
+          {err && <div style={{ padding: '8px 12px', background: '#fef2f2', border: '1px solid #fecaca',
+            borderRadius: 7, fontSize: 12, color: '#dc2626' }}>{err}</div>}
+
+          {/* ── Templates ── */}
+          {!isEdit && (
+            <div style={{ border: '1px solid #e8ecf0', borderRadius: 8, overflow: 'hidden' }}>
+              <button onClick={() => setShowTpl(v => !v)}
+                style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  padding: '9px 14px', background: showTpl ? '#f8fafc' : '#fff', border: 'none', cursor: 'pointer',
+                  fontFamily: 'inherit' }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: '#374151' }}>
+                  📋 Quick Templates
+                </span>
+                <span style={{ fontSize: 11, color: '#9ca3af' }}>{showTpl ? '▲ hide' : '▼ show'}</span>
+              </button>
+              {showTpl && (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6, padding: '10px 12px',
+                  borderTop: '1px solid #f0f2f5', background: '#fafafa' }}>
+                  {TEMPLATES.map(tpl => (
+                    <button key={tpl.label} onClick={() => applyTemplate(tpl)}
+                      style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3,
+                        padding: '8px 6px', borderRadius: 7, border: '1px solid #e5e7eb', background: '#fff',
+                        cursor: 'pointer', fontFamily: 'inherit', fontSize: 11, color: '#374151',
+                        transition: 'border-color 0.15s' }}
+                      onMouseEnter={e => e.currentTarget.style.borderColor = accent}
+                      onMouseLeave={e => e.currentTarget.style.borderColor = '#e5e7eb'}>
+                      <span style={{ fontSize: 18 }}>{tpl.icon}</span>
+                      <span style={{ fontWeight: 600, textAlign: 'center', lineHeight: 1.3 }}>{tpl.label}</span>
+                      <span style={{ fontSize: 10, color: tpl.severity === 'critical' ? '#ef4444' : '#f59e0b',
+                        fontWeight: 700, textTransform: 'uppercase' }}>{tpl.severity}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           )}
 
-          <div>
-            <label style={S.label}>Rule Name <span style={{ color: '#ef4444' }}>*</span></label>
-            <input style={S.input} value={form.name}
-              onChange={e => set('name', e.target.value)} placeholder="e.g. CPU > 90%" />
-          </div>
-
-          <div>
-            <label style={S.label}>Severity <span style={{ color: '#ef4444' }}>*</span></label>
-            <select style={S.select} value={form.severity} onChange={e => set('severity', e.target.value)}>
-              <option value="ok">OK</option>
-              <option value="warning">Warning</option>
-              <option value="critical">Critical</option>
-            </select>
-          </div>
-
-          <div>
-            <label style={S.label}>Query <span style={{ color: '#ef4444' }}>*</span></label>
-            <textarea style={{ ...S.input, height: 90, resize: 'vertical', fontFamily: 'monospace', fontSize: 12 }}
-              value={form.query} onChange={e => set('query', e.target.value)}
-              placeholder="e.g. devices.status = 0" />
-            <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4 }}>
-              SQL condition expression on LibreNMS tables.
+          {/* ── Name + Severity ── */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 160px', gap: 12 }}>
+            <div>
+              <label style={S.label}>Rule Name <span style={{ color: '#ef4444' }}>*</span></label>
+              <input style={S.input} value={form.name} onChange={e => set('name', e.target.value)}
+                placeholder="e.g. CPU High" />
+            </div>
+            <div>
+              <label style={S.label}>Severity <span style={{ color: '#ef4444' }}>*</span></label>
+              <select style={S.select} value={form.severity} onChange={e => set('severity', e.target.value)}>
+                <option value="ok">OK</option>
+                <option value="warning">Warning</option>
+                <option value="critical">Critical</option>
+              </select>
             </div>
           </div>
 
+          {/* ── Query section ── */}
+          <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, overflow: 'hidden' }}>
+            {/* Mode tabs */}
+            <div style={{ display: 'flex', background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
+              {[['visual','🔧 Visual Builder'],['advanced','⚡ Advanced (SQL)']].map(([m, label]) => (
+                <button key={m} onClick={() => switchMode(m)}
+                  style={{ flex: 1, padding: '8px 12px', border: 'none', cursor: 'pointer', fontFamily: 'inherit',
+                    fontSize: 11, fontWeight: 700, background: mode === m ? '#fff' : 'transparent',
+                    color: mode === m ? accent : '#6b7280',
+                    borderBottom: mode === m ? `2px solid ${accent}` : '2px solid transparent' }}>
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            <div style={{ padding: 12 }}>
+              {mode === 'visual' ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {conds.map((c, i) => {
+                    const field = FIELDS.find(f => f.key === c.field);
+                    const ops   = field?.type === 'enum' ? ENUM_OPS : NUM_OPS;
+                    return (
+                      <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        {i > 0 && (
+                          <select value={c.connector} onChange={e => updateCond(i, { connector: e.target.value })}
+                            style={{ ...selStyle, width: 60 }}>
+                            <option value="AND">AND</option>
+                            <option value="OR">OR</option>
+                          </select>
+                        )}
+                        {i === 0 && <div style={{ width: 60, fontSize: 11, color: '#9ca3af', textAlign: 'center' }}>IF</div>}
+
+                        <select value={c.field} onChange={e => updateCond(i, { field: e.target.value })}
+                          style={{ ...selStyle, flex: 2 }}>
+                          {FIELDS.map(f => <option key={f.key} value={f.key}>{f.label}</option>)}
+                        </select>
+
+                        <select value={c.op} onChange={e => updateCond(i, { op: e.target.value })}
+                          style={{ ...selStyle, width: 56 }}>
+                          {ops.map(op => <option key={op} value={op}>{op}</option>)}
+                        </select>
+
+                        {field?.type === 'enum' ? (
+                          <select value={c.value} onChange={e => updateCond(i, { value: e.target.value })}
+                            style={{ ...selStyle, flex: 1 }}>
+                            {field.opts.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                          </select>
+                        ) : (
+                          <input type="number" value={c.value} onChange={e => updateCond(i, { value: e.target.value })}
+                            style={{ ...selStyle, flex: 1 }} placeholder="value" />
+                        )}
+
+                        <button onClick={() => setConds(cs => cs.filter((_, j) => j !== i))}
+                          style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#d1d5db',
+                            fontSize: 16, lineHeight: 1, padding: '0 2px', flexShrink: 0 }}
+                          title="Remove">×</button>
+                      </div>
+                    );
+                  })}
+                  <button onClick={() => setConds(cs => [...cs, mkCond()])}
+                    style={{ alignSelf: 'flex-start', padding: '4px 12px', borderRadius: 6,
+                      border: `1px dashed ${accent}`, background: 'transparent', color: accent,
+                      fontSize: 11, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>
+                    + Add condition
+                  </button>
+                  {form.query && (
+                    <div style={{ background: '#f9fafb', borderRadius: 6, padding: '6px 10px',
+                      fontSize: 11, color: '#6b7280', fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                      {form.query}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div>
+                  <textarea style={{ ...S.input, height: 80, resize: 'vertical', fontFamily: 'monospace',
+                    fontSize: 12, marginBottom: 4 }}
+                    value={form.query} onChange={e => set('query', e.target.value)}
+                    placeholder="e.g. processors.processor_usage > 80" />
+                  <div style={{ fontSize: 11, color: '#9ca3af' }}>
+                    SQL condition — tables: devices, processors, mempools, ports, sensors
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* ── Test Result ── */}
+          {testResult && (
+            <div style={{
+              padding: '10px 14px', borderRadius: 8, fontSize: 12,
+              background: testResult.status === 'error' ? '#fef2f2' : testResult.count === 0 ? '#fffbeb' : '#f0fdf4',
+              border: `1px solid ${testResult.status === 'error' ? '#fecaca' : testResult.count === 0 ? '#fde68a' : '#bbf7d0'}`,
+              color: testResult.status === 'error' ? '#dc2626' : testResult.count === 0 ? '#92400e' : '#15803d',
+            }}>
+              {testResult.status === 'error' ? (
+                <><strong>✗ Query error:</strong> {testResult.message}</>
+              ) : testResult.count === 0 ? (
+                <><strong>⚠ 0 matches</strong> — rule will never fire with current data</>
+              ) : (
+                <>
+                  <strong>✓ {testResult.count} device{testResult.count !== 1 ? 's' : ''} match</strong>
+                  {testResult.devices?.length > 0 && (
+                    <span style={{ marginLeft: 8, color: '#166534' }}>
+                      {testResult.devices.slice(0, 5).join(', ')}
+                      {testResult.count > 5 ? ` +${testResult.count - 5} more` : ''}
+                    </span>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+
+          {/* ── Notes ── */}
           <div>
             <label style={S.label}>Notes</label>
-            <textarea style={{ ...S.input, height: 60, resize: 'vertical' }}
+            <textarea style={{ ...S.input, height: 52, resize: 'vertical' }}
               value={form.notes} onChange={e => set('notes', e.target.value)}
               placeholder="Optional description or runbook link" />
           </div>
 
-          {/* Smart Alert thresholds */}
+          {/* ── Smart Alert Thresholds ── */}
           <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: '12px 14px' }}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: '#64748b', marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-              Smart Alert Thresholds
-            </div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: '#64748b', marginBottom: 10,
+              textTransform: 'uppercase', letterSpacing: '0.05em' }}>Smart Alert Thresholds</div>
             <div style={{ display: 'flex', gap: 14 }}>
               <div style={{ flex: 1 }}>
-                <label style={S.label}>
-                  Confirm Count
-                  <span style={{ fontWeight: 400, color: '#9ca3af', marginLeft: 4 }}>(1–10)</span>
-                </label>
+                <label style={S.label}>Confirm Count <span style={{ fontWeight: 400, color: '#9ca3af' }}>(1–10)</span></label>
                 <input type="number" min={1} max={10} style={{ ...S.input, width: '100%' }}
                   value={form.confirm_count ?? 1}
                   onChange={e => set('confirm_count', Math.max(1, Math.min(10, parseInt(e.target.value) || 1)))} />
-                <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 3 }}>
-                  Consecutive positive polls before firing
-                </div>
+                <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 3 }}>Consecutive positive polls before firing</div>
               </div>
               <div style={{ flex: 1 }}>
-                <label style={S.label}>
-                  Delay
-                  <span style={{ fontWeight: 400, color: '#9ca3af', marginLeft: 4 }}>(minutes)</span>
-                </label>
+                <label style={S.label}>Delay <span style={{ fontWeight: 400, color: '#9ca3af' }}>(minutes)</span></label>
                 <input type="number" min={0} max={1440} style={{ ...S.input, width: '100%' }}
                   value={form.delay_min ?? 0}
                   onChange={e => set('delay_min', Math.max(0, parseInt(e.target.value) || 0))} />
-                <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 3 }}>
-                  Wait N min since first detection
-                </div>
+                <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 3 }}>Wait N min since first detection</div>
               </div>
             </div>
           </div>
 
+          {/* ── Options ── */}
           <div style={{ display: 'flex', gap: 24 }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13, color: '#374151' }}>
-              <input type="checkbox" checked={form.disabled} onChange={e => set('disabled', e.target.checked)}
-                style={{ width: 14, height: 14, cursor: 'pointer' }} />
-              Start disabled
-            </label>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13, color: '#374151' }}>
-              <input type="checkbox" checked={form.invert_map} onChange={e => set('invert_map', e.target.checked)}
-                style={{ width: 14, height: 14, cursor: 'pointer' }} />
-              Invert device map
-            </label>
+            {[['disabled','Start disabled'],['invert_map','Invert device map']].map(([k, label]) => (
+              <label key={k} style={{ display: 'flex', alignItems: 'center', gap: 8,
+                cursor: 'pointer', fontSize: 13, color: '#374151' }}>
+                <input type="checkbox" checked={form[k]} onChange={e => set(k, e.target.checked)}
+                  style={{ width: 14, height: 14, cursor: 'pointer' }} />
+                {label}
+              </label>
+            ))}
           </div>
         </div>
 
         {/* Footer */}
-        <div style={{ padding: '14px 20px', borderTop: '1px solid #e8ecf0',
-          display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-          <button onClick={onClose} style={S.ghost}>Cancel</button>
-          <button onClick={submit} disabled={saving}
-            style={{ ...S.btn(accent), opacity: saving ? 0.6 : 1 }}>
-            {saving ? 'Saving…' : (initial ? 'Save Changes' : 'Create Rule')}
+        <div style={{ padding: '14px 20px', borderTop: '1px solid #e8ecf0', flexShrink: 0,
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <button onClick={handleTest} disabled={testing || !form.query}
+            style={{ ...S.ghost, opacity: (!form.query || testing) ? 0.5 : 1 }}>
+            {testing ? '⏳ Testing…' : '🧪 Test Rule'}
           </button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={onClose} style={S.ghost}>Cancel</button>
+            <button onClick={submit} disabled={saving}
+              style={{ ...S.btn(accent), opacity: saving ? 0.6 : 1 }}>
+              {saving ? 'Saving…' : (isEdit ? 'Save Changes' : 'Create Rule')}
+            </button>
+          </div>
         </div>
       </div>
     </div>

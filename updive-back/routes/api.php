@@ -352,6 +352,95 @@ Route::prefix('v0')->group(function (): void {
         return response()->json(['status' => 'ok', 'count' => $devices->count(), 'devices' => $devices]);
     });
 
+    // ── Device full data (single request, replaces 7 parallel calls) ─
+    Route::get('devices/{hostname}/full', function (string $hostname) {
+        $device = \DB::table('devices')
+            ->where('hostname', $hostname)->orWhere('ip', $hostname)
+            ->first();
+
+        if (! $device) {
+            return response()->json(['status' => 'error', 'message' => 'Device not found'], 404);
+        }
+
+        $deviceId = $device->device_id;
+
+        // All queries run in the same DB connection — no network round-trips
+        $ports = \DB::table('ports')
+            ->where('device_id', $deviceId)
+            ->select([
+                'port_id','device_id','ifIndex','ifName','ifAlias','ifDescr',
+                'ifOperStatus','ifAdminStatus','ifSpeed','ifPhysAddress','ifType','ifMtu',
+                'ifInOctets_rate','ifOutOctets_rate',
+                'ifInUcastPkts_rate','ifOutUcastPkts_rate',
+                'poll_time','ignore','disabled',
+            ])
+            ->orderBy('ifIndex')
+            ->get();
+
+        $processors = \DB::table('processors')
+            ->where('device_id', $deviceId)
+            ->get();
+
+        $mempools = \DB::table('mempools')
+            ->where('device_id', $deviceId)
+            ->get();
+
+        $alerts = \DB::table('alerts')
+            ->join('alert_rules', 'alert_rules.id', '=', 'alerts.rule_id')
+            ->where('alerts.device_id', $deviceId)
+            ->select('alerts.*', 'alert_rules.name', 'alert_rules.severity')
+            ->orderByDesc('alerts.timestamp')
+            ->limit(50)
+            ->get();
+
+        $eventlog = \DB::table('eventlog')
+            ->where('device_id', $deviceId)
+            ->orderByDesc('event_id')
+            ->limit(50)
+            ->get();
+
+        $links = \DB::table('links')
+            ->join('ports as lp', 'lp.port_id', '=', 'links.local_port_id')
+            ->join('ports as rp', 'rp.port_id', '=', 'links.remote_port_id')
+            ->join('devices as rd', 'rd.device_id', '=', 'links.remote_device_id')
+            ->where('links.local_device_id', $deviceId)
+            ->select(
+                'links.*',
+                'lp.ifName as local_ifName',
+                'rp.ifName as remote_ifName',
+                'rd.hostname as remote_hostname',
+                'rd.sysName as remote_sysName'
+            )
+            ->get();
+
+        $sanitize = function ($value) use (&$sanitize) {
+            if (is_string($value)) {
+                return mb_convert_encoding($value, 'UTF-8', 'UTF-8');
+            }
+            if (is_array($value)) {
+                return array_map($sanitize, $value);
+            }
+            if (is_object($value)) {
+                return (object) array_map($sanitize, (array) $value);
+            }
+            return $value;
+        };
+
+        $data = [
+            'status'     => 'ok',
+            'device'     => $sanitize((array) $device),
+            'ports'      => $sanitize($ports->map(fn($p) => (array)$p)->toArray()),
+            'processors' => $sanitize($processors->map(fn($p) => (array)$p)->toArray()),
+            'mempools'   => $sanitize($mempools->map(fn($p) => (array)$p)->toArray()),
+            'alerts'     => $sanitize($alerts->map(fn($p) => (array)$p)->toArray()),
+            'eventlog'   => $sanitize($eventlog->map(fn($p) => (array)$p)->toArray()),
+            'links'      => $sanitize($links->map(fn($p) => (array)$p)->toArray()),
+        ];
+
+        return response(json_encode($data, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE), 200)
+            ->header('Content-Type', 'application/json');
+    })->where('hostname', '.*');
+
     // OS override endpoints
     Route::get('devices/os-list', function () {
         $files = glob(base_path('resources/definitions/os_detection/*.yaml'));
@@ -583,6 +672,77 @@ Route::prefix('v0')->group(function (): void {
                 'last_poll'  => $lastPoll,
                 'stale'      => $staleCount,
             ]);
+        });
+
+        // ── Alert rule test (dry-run query against live data) ─────────
+        Route::post('alerts/test-rule', function (\Illuminate\Http\Request $req) {
+            $query = trim($req->input('query', ''));
+            if (empty($query)) {
+                return response()->json(['status' => 'error', 'message' => 'Query is required.'], 422);
+            }
+
+            // Block dangerous keywords
+            $lower = strtolower($query);
+            foreach (['drop','delete','insert','update','create','alter','truncate','exec','sleep','benchmark'] as $kw) {
+                if (str_contains($lower, $kw)) {
+                    return response()->json(['status' => 'error', 'message' => "Keyword '$kw' is not allowed."], 422);
+                }
+            }
+
+            // Detect primary table from query
+            $table = 'devices';
+            foreach (['processors','mempools','ports','sensors'] as $t) {
+                if (str_contains($lower, $t . '.')) { $table = $t; break; }
+            }
+
+            try {
+                $base = $table === 'devices'
+                    ? \DB::table('devices')
+                    : \DB::table($table)->join('devices', "$table.device_id", '=', 'devices.device_id');
+
+                $count = (clone $base)->whereRaw($query)->when($table !== 'devices', fn($q) => $q->distinct('devices.device_id'))->count(\DB::raw('DISTINCT devices.device_id'));
+
+                $devices = (clone $base)->whereRaw($query)
+                    ->select('devices.hostname', 'devices.sysName')
+                    ->distinct()->limit(8)->get()
+                    ->map(fn($d) => $d->hostname)->toArray();
+
+                return response()->json(['status' => 'ok', 'count' => $count, 'devices' => $devices]);
+            } catch (\Exception $e) {
+                return response()->json(['status' => 'error', 'message' => $e->getMessage()], 422);
+            }
+        });
+
+        // ── Alert histogram (24h hourly, for dashboard timeline widget) ──
+        Route::get('alerts/histogram', function () {
+            $rows = \DB::table('alert_log')
+                ->join('alert_rules', 'alert_log.rule_id', '=', 'alert_rules.id')
+                ->where('alert_log.time_logged', '>=', now()->subHours(24))
+                ->selectRaw("DATE_FORMAT(alert_log.time_logged, '%H') AS hr, alert_rules.severity, COUNT(*) AS cnt")
+                ->groupByRaw('hr, alert_rules.severity')
+                ->orderBy('hr')
+                ->get();
+
+            $byHour = [];
+            foreach ($rows as $r) {
+                $h = (int) $r->hr;
+                if (!isset($byHour[$h])) $byHour[$h] = ['critical' => 0, 'warning' => 0, 'info' => 0];
+                $byHour[$h][$r->severity] = (int) $r->cnt;
+            }
+
+            $now = now()->hour;
+            $result = [];
+            for ($i = 23; $i >= 0; $i--) {
+                $h = ($now - $i + 24) % 24;
+                $result[] = [
+                    'hour'     => sprintf('%02d:00', $h),
+                    'critical' => $byHour[$h]['critical'] ?? 0,
+                    'warning'  => $byHour[$h]['warning']  ?? 0,
+                    'info'     => $byHour[$h]['info']     ?? 0,
+                ];
+            }
+
+            return response()->json(['status' => 'ok', 'histogram' => $result]);
         });
 
         // ── System config ─────────────────────────────────────────────

@@ -71,8 +71,12 @@ export const saveCommunityPool      = (pool)       => api.post('/discovery/commu
 export const cidrScan               = (params)     => api.post('/discovery/cidr-scan', params).then(r => r.data);
 export const getLogs         = (limit = 50) => cached(`logs:${limit}`, () => api.get('/logs/eventlog', { params: { limit } }).then(r => r.data?.logs ?? []));
 export const getEventLog     = (params = {}) => api.get('/eventlog', { params }).then(r => r.data);
-export const getSystemInfo   = () => api.get('/system').then(r => r.data || {});
-export const getSystemStats  = () => api.get('/system/stats').then(r => r.data || {});
+export const getSystemInfo      = () => api.get('/system').then(r => r.data || {});
+export const getSystemStats     = () => api.get('/system/stats').then(r => r.data || {});
+export const getPollerQueue     = () => api.get('/system/poller-queue').then(r => r.data);
+export const testAlertRule      = (query) => api.post('/alerts/test-rule', { query }).then(r => r.data);
+export const getAnomalyStats    = () => cached('anomaly-stats', () => api.get('/anomaly').then(r => r.data));
+export const getAlertHistogram  = () => cached('alert-histogram', () => api.get('/alerts/histogram').then(r => r.data?.histogram ?? []));
 export const getArp          = (query = '0.0.0.0') => api.get(`/resources/ip/arp/${query}`).then(r => r.data?.arp ?? []);
 
 // ─── Write operations (admin) ─────────────────────────────────────
@@ -87,6 +91,11 @@ export const snmpCheck     = (params)         => api.post('/devices/snmp-check',
 export const getOsList     = ()               => api.get('/devices/os-list').then(r => r.data?.os_list ?? []);
 export const setDeviceOs   = (hostname, os)   => api.patch(`/devices/${hostname}/os`, { os }).then(r => r.data);
 export const clearDeviceOs = (hostname)       => api.delete(`/devices/${hostname}/os`).then(r => r.data);
+
+// Per-device — single request returning all data at once
+export const getDeviceFull = (hostname) => cached(`full:${hostname}`, () =>
+  api.get(`/devices/${encodeURIComponent(hostname)}/full`).then(r => r.data)
+);
 
 // Per-device (cached by hostname)
 export const getDeviceDetails    = (hostname) => cached(`dev:${hostname}`,       () => api.get(`/devices/${hostname}`).then(r => r.data?.devices?.[0] ?? null));

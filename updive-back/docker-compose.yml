@@ -1,16 +1,15 @@
 services:
   frontend:
-    build: ../updive-front/ui-app
+    build:
+      context: ../updive-front/ui-app
+      args:
+        VITE_BACKEND_URL: ""
     container_name: updive-nsm-frontend
     restart: always
     ports:
-      - "5176:5176"
+      - "5176:80"
     environment:
       - TZ=Asia/Tashkent
-      - IN_DOCKER=true
-    volumes:
-      - ../updive-front/ui-app:/app
-      - /app/node_modules
     depends_on:
       - app
 
@@ -63,61 +62,6 @@ services:
     environment:
       - TZ=Asia/Tashkent
 
-  # ── SNMP Simulators (dev only — comment out for production) ────────
-  snmp-switch-01:
-    image: tandrup/snmpsim:latest
-    container_name: snmp-switch-01
-    restart: always
-    volumes:
-      - ./snmpsim/data/switch-01/public.snmprec:/usr/local/snmpsim/data/public.snmprec:ro
-    environment:
-      - TZ=Asia/Tashkent
-    ports:
-      - "16101:161/udp"
-
-  snmp-switch-02:
-    image: tandrup/snmpsim:latest
-    container_name: snmp-switch-02
-    restart: always
-    volumes:
-      - ./snmpsim/data/switch-02/public.snmprec:/usr/local/snmpsim/data/public.snmprec:ro
-    environment:
-      - TZ=Asia/Tashkent
-    ports:
-      - "16102:161/udp"
-
-  snmp-switch-03:
-    image: tandrup/snmpsim:latest
-    container_name: snmp-switch-03
-    restart: always
-    volumes:
-      - ./snmpsim/data/switch-03/public.snmprec:/usr/local/snmpsim/data/public.snmprec:ro
-    environment:
-      - TZ=Asia/Tashkent
-    ports:
-      - "16103:161/udp"
-
-  snmp-switch-04:
-    image: tandrup/snmpsim:latest
-    container_name: snmp-switch-04
-    restart: always
-    volumes:
-      - ./snmpsim/data/switch-04/public.snmprec:/usr/local/snmpsim/data/public.snmprec:ro
-    environment:
-      - TZ=Asia/Tashkent
-    ports:
-      - "16104:161/udp"
-
-  snmp-switch-05:
-    image: tandrup/snmpsim:latest
-    container_name: snmp-switch-05
-    restart: always
-    volumes:
-      - ./snmpsim/data/switch-05/public.snmprec:/usr/local/snmpsim/data/public.snmprec:ro
-    environment:
-      - TZ=Asia/Tashkent
-    ports:
-      - "16105:161/udp"
 
 volumes:
   db_data:

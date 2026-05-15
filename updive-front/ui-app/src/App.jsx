@@ -88,7 +88,7 @@ function App() {
 
   const renderPage = () => {
     switch (activePage) {
-      case 'dashboard':     return <DashboardPage accent={ACCENT} />;
+      case 'dashboard':     return <DashboardPage accent={ACCENT} onNav={navigate} onSelectDevice={navigateToDevice} />;
       case 'devices':       return <DevicesPage accent={ACCENT} onSelectDevice={navigateToDevice} />;
       case 'device-details':return <DeviceDetailsPage hostname={selectedDevice} onBack={() => navigate('devices')} accent={ACCENT} />;
       case 'alerts':        return <AlertsPage accent={ACCENT} />;
