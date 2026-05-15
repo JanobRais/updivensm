@@ -949,7 +949,6 @@ Route::prefix('v0')->group(function (): void {
             if (!$device) return response()->json(['status' => 'error', 'message' => 'Device not found'], 404);
             $sensors = \DB::table('sensors')
                 ->where('device_id', $device->device_id)
-                ->whereNotNull('sensor_current')
                 ->orderBy('sensor_class')
                 ->orderBy('sensor_descr')
                 ->get(['sensor_id', 'sensor_class', 'sensor_descr', 'sensor_current',
