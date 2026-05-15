@@ -32,7 +32,6 @@ class DiscoverDevice implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    public $queue        = 'discovery';
     public int $timeout  = 120;
     public int $tries    = 1;
 
@@ -43,6 +42,7 @@ class DiscoverDevice implements ShouldQueue
         public int $device_id,
         public ModuleList $moduleList,
     ) {
+        $this->onQueue('discovery');
     }
 
     /**
