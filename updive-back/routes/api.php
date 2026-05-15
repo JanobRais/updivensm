@@ -66,7 +66,6 @@ Route::prefix('v0')->group(function (): void {
 
         // Edges: LLDP links (deduplicated — keep one direction per pair)
         $links = \DB::table('links')
-            ->where('active', 1)
             ->whereNotNull('remote_device_id')
             ->where('remote_device_id', '>', 0)
             ->select('local_device_id', 'remote_device_id', 'protocol',
