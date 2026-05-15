@@ -136,6 +136,7 @@ const SwitchPanel = ({ ports, selectedPort, onSelect, links = [] }) => {
 
   // Shorten remote hostname for label: take last segment after dash or dot
   const shortName = (name) => {
+    if (!name) return '?';
     const parts = name.split(/[-.]/).filter(Boolean);
     return parts[parts.length - 1]?.toUpperCase() ?? name;
   };
