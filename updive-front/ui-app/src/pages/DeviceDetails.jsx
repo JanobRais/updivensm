@@ -1,8 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { PageHeader, StatCard, Badge, TableCard, TD } from '../components/Charts';
 import {
-  getDeviceDetails, getDevicePorts, getDeviceProcessors,
-  getDeviceMempools, getDeviceAlerts, getDeviceEventlog, getDeviceLinks,
+  getDeviceFull,
   getMetrics, getInventory, getDeviceHealth,
   getOsList, setDeviceOs, clearDeviceOs,
 } from '../api';
@@ -430,6 +429,14 @@ const DeviceDetailsPage = ({ hostname, onBack, accent }) => {
   const [mLoading,     setMLoading]     = useState(false);
   const [mTick,        setMTick]        = useState(0);
 
+  // CPU / Memory chart state
+  const [cpuRange,     setCpuRange]     = useState('6h');
+  const [cpuData,      setCpuData]      = useState([]);
+  const [cpuLoading,   setCpuLoading]   = useState(false);
+  const [memRange,     setMemRange]     = useState('6h');
+  const [memData,      setMemData]      = useState([]);
+  const [memLoading,   setMemLoading]   = useState(false);
+
   // Inventory tab state
   const [inventory,    setInventory]    = useState([]);
   const [invLoading,   setInvLoading]   = useState(false);
@@ -447,25 +454,18 @@ const DeviceDetailsPage = ({ hostname, onBack, accent }) => {
   useEffect(() => {
     setLoading(true);
     setSelPort(null);
-    const safe = (promise, fallback) => promise.catch(() => fallback);
-    Promise.all([
-      getDeviceDetails(hostname),
-      safe(getDevicePorts(hostname),      []),
-      safe(getDeviceProcessors(hostname), []),
-      safe(getDeviceMempools(hostname),   []),
-      safe(getDeviceAlerts(hostname),     []),
-      safe(getDeviceEventlog(hostname),   []),
-      safe(getDeviceLinks(hostname),      []),
-    ]).then(([dev, p, procs, mems, alts, logs, lks]) => {
-      setDevice(dev);
-      setPorts(p);
-      setProcs(procs);
-      setMems(mems);
-      setAlerts(alts);
-      setEventlog(logs);
-      setLinks(lks);
-      setLoading(false);
-    }).catch(() => setLoading(false));
+    getDeviceFull(hostname)
+      .then(d => {
+        setDevice(d.device);
+        setPorts(d.ports      ?? []);
+        setProcs(d.processors ?? []);
+        setMems(d.mempools    ?? []);
+        setAlerts(d.alerts    ?? []);
+        setEventlog(d.eventlog ?? []);
+        setLinks(d.links      ?? []);
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
   }, [hostname]);
 
   const dtLocalToApi = v => v ? v.replace('T', ' ') + ':00' : null;
@@ -523,6 +523,34 @@ const DeviceDetailsPage = ({ hostname, onBack, accent }) => {
       setMLoading(false);
     });
   }, [tab, device, mPreset, mRangeMode, mApplied, mPortId, mTick]);
+
+  // Load CPU chart data
+  useEffect(() => {
+    if (tab !== 'CPU' || !device) return;
+    const hoursMap = { '1h': 1, '6h': 6, '24h': 24, '7d': 168 };
+    const hours = hoursMap[cpuRange] ?? 6;
+    const from  = new Date(Date.now() - hours * 3600_000).toISOString().replace('T', ' ').slice(0, 19);
+    const to    = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    setCpuLoading(true);
+    getMetrics({ device_id: device.device_id, metric_type: 'cpu', from, to, resolution: 'auto', limit: 300 })
+      .then(r => setCpuData(r.metrics ?? []))
+      .catch(() => setCpuData([]))
+      .finally(() => setCpuLoading(false));
+  }, [tab, device, cpuRange]);
+
+  // Load Memory chart data
+  useEffect(() => {
+    if (tab !== 'Memory' || !device) return;
+    const hoursMap = { '1h': 1, '6h': 6, '24h': 24, '7d': 168 };
+    const hours = hoursMap[memRange] ?? 6;
+    const from  = new Date(Date.now() - hours * 3600_000).toISOString().replace('T', ' ').slice(0, 19);
+    const to    = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    setMemLoading(true);
+    getMetrics({ device_id: device.device_id, metric_type: 'mem', from, to, resolution: 'auto', limit: 300 })
+      .then(r => setMemData(r.metrics ?? []))
+      .catch(() => setMemData([]))
+      .finally(() => setMemLoading(false));
+  }, [tab, device, memRange]);
 
   // Load inventory when tab is active
   useEffect(() => {
@@ -902,43 +930,95 @@ const DeviceDetailsPage = ({ hostname, onBack, accent }) => {
 
       {/* ── CPU ────────────────────────────────────────────────────── */}
       {tab === 'CPU' && (
-        <Section title={`CPU Cores (${processors.length}) — Avg: ${avgCpu}%`}>
-          <div style={{ padding: '12px 18px', display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {processors.length === 0
-              ? <p style={{ color: '#9ca3af', fontSize: 12 }}>No processor data available.</p>
-              : processors.map((p) => (
-                  <div key={p.processor_id}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#374151', marginBottom: 4 }}>
-                      <span>{p.processor_descr} #{p.processor_index}</span>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {/* Current usage */}
+          <Section title={`CPU Cores (${processors.length}) — Avg: ${avgCpu}%`}>
+            <div style={{ padding: '12px 18px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {processors.length === 0
+                ? <p style={{ color: '#9ca3af', fontSize: 12 }}>No processor data available.</p>
+                : processors.map((p) => (
+                    <div key={p.processor_id}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#374151', marginBottom: 4 }}>
+                        <span>{p.processor_descr} #{p.processor_index}</span>
+                        <span style={{ fontWeight: 700, color: (p.processor_usage||0) > 80 ? '#ef4444' : '#374151' }}>{p.processor_usage || 0}%</span>
+                      </div>
+                      <PercentBar value={p.processor_usage || 0} warn={p.processor_perc_warn || 75} color={accent} />
                     </div>
-                    <PercentBar value={p.processor_usage || 0} warn={p.processor_perc_warn || 75} color={accent} />
-                  </div>
-                ))
-            }
-          </div>
-        </Section>
+                  ))
+              }
+            </div>
+          </Section>
+
+          {/* Historical chart */}
+          <Section title="CPU Tarix" action={
+            <div style={{ display: 'flex', gap: 4 }}>
+              {['1h','6h','24h','7d'].map(r => (
+                <button key={r} onClick={() => setCpuRange(r)} style={{
+                  padding: '3px 10px', borderRadius: 6, border: 'none', fontSize: 11,
+                  fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+                  background: cpuRange === r ? accent : '#f3f4f6',
+                  color: cpuRange === r ? '#fff' : '#6b7280',
+                }}>{r}</button>
+              ))}
+            </div>
+          }>
+            <div style={{ padding: '12px 16px' }}>
+              {cpuLoading
+                ? <div style={{ height: 120, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#9ca3af', fontSize: 12 }}>Yuklanmoqda…</div>
+                : <MiniChart uid="cpu-hist" data={cpuData} unit="%" color={accent} />
+              }
+            </div>
+          </Section>
+        </div>
       )}
 
       {/* ── Memory ─────────────────────────────────────────────────── */}
       {tab === 'Memory' && (
-        <Section title="Memory Pools">
-          <div style={{ padding: '12px 18px', display: 'flex', flexDirection: 'column', gap: 14 }}>
-            {mempools.length === 0
-              ? <p style={{ color: '#9ca3af', fontSize: 12 }}>No memory pool data available.</p>
-              : mempools.map(m => (
-                  <div key={m.mempool_id}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: '#374151', marginBottom: 6 }}>
-                      <span style={{ fontWeight: 600 }}>{m.mempool_descr}</span>
-                      <span style={{ color: '#6b7280', fontSize: 11 }}>
-                        {fmt.bytes(m.mempool_used)} / {fmt.bytes(m.mempool_total)}
-                      </span>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {/* Current usage */}
+          <Section title="Memory Pools">
+            <div style={{ padding: '12px 18px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+              {mempools.length === 0
+                ? <p style={{ color: '#9ca3af', fontSize: 12 }}>No memory pool data available.</p>
+                : mempools.map(m => (
+                    <div key={m.mempool_id}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: '#374151', marginBottom: 6 }}>
+                        <span style={{ fontWeight: 600 }}>{m.mempool_descr}</span>
+                        <span style={{ color: '#6b7280', fontSize: 11 }}>
+                          {fmt.bytes(m.mempool_used)} / {fmt.bytes(m.mempool_total)}
+                          <span style={{ marginLeft: 8, fontWeight: 700, color: (m.mempool_perc||0) > 85 ? '#ef4444' : '#374151' }}>
+                            {m.mempool_perc || 0}%
+                          </span>
+                        </span>
+                      </div>
+                      <PercentBar value={m.mempool_perc || 0} warn={m.mempool_perc_warn || 90} color="#3b82f6" />
                     </div>
-                    <PercentBar value={m.mempool_perc || 0} warn={m.mempool_perc_warn || 90} color="#3b82f6" />
-                  </div>
-                ))
-            }
-          </div>
-        </Section>
+                  ))
+              }
+            </div>
+          </Section>
+
+          {/* Historical chart */}
+          <Section title="Memory Tarix" action={
+            <div style={{ display: 'flex', gap: 4 }}>
+              {['1h','6h','24h','7d'].map(r => (
+                <button key={r} onClick={() => setMemRange(r)} style={{
+                  padding: '3px 10px', borderRadius: 6, border: 'none', fontSize: 11,
+                  fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+                  background: memRange === r ? '#3b82f6' : '#f3f4f6',
+                  color: memRange === r ? '#fff' : '#6b7280',
+                }}>{r}</button>
+              ))}
+            </div>
+          }>
+            <div style={{ padding: '12px 16px' }}>
+              {memLoading
+                ? <div style={{ height: 120, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#9ca3af', fontSize: 12 }}>Yuklanmoqda…</div>
+                : <MiniChart uid="mem-hist" data={memData} unit="%" color="#3b82f6" />
+              }
+            </div>
+          </Section>
+        </div>
       )}
 
       {/* ── Alerts ─────────────────────────────────────────────────── */}
@@ -1194,7 +1274,7 @@ const DeviceDetailsPage = ({ hostname, onBack, accent }) => {
             <div style={{ background: '#fff', borderRadius: 10, border: '1px solid #e8ecf0', padding: 40, textAlign: 'center', color: '#9ca3af', fontSize: 12 }}>
               Loading health data...
             </div>
-          ) : !health || (Array.isArray(health.health) && health.health.length === 0) ? (
+          ) : !health || !health.health || (Array.isArray(health.health) && health.health.length === 0) ? (
             <div style={{ background: '#fff', borderRadius: 10, border: '1px dashed #e8ecf0', padding: 40, textAlign: 'center' }}>
               <div style={{ fontSize: 14, fontWeight: 600, color: '#374151', marginBottom: 8 }}>No Health Sensors</div>
               <div style={{ fontSize: 12, color: '#9ca3af' }}>This device does not report SNMP health sensors (temperature, voltage, fans, etc.).</div>
