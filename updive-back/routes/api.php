@@ -400,8 +400,8 @@ Route::prefix('v0')->group(function (): void {
 
         $links = \DB::table('links')
             ->join('ports as lp', 'lp.port_id', '=', 'links.local_port_id')
-            ->join('ports as rp', 'rp.port_id', '=', 'links.remote_port_id')
-            ->join('devices as rd', 'rd.device_id', '=', 'links.remote_device_id')
+            ->leftJoin('ports as rp', 'rp.port_id', '=', 'links.remote_port_id')
+            ->leftJoin('devices as rd', 'rd.device_id', '=', 'links.remote_device_id')
             ->where('links.local_device_id', $deviceId)
             ->select(
                 'links.*',
